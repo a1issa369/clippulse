@@ -115,7 +115,7 @@ The last lines print `SiteUrl`. Open it.
 
 > New AWS accounts can be blocked from creating CloudFront distributions until AWS Support verifies the account ("Your account must be verified before you can add new CloudFront resources"). That is why CloudFront is off by default. Once verified, redeploy with `--parameter-overrides EnableCloudFront=true`, then sync `frontend/dist` to `SiteBucketName` and invalidate the distribution.
 
-**5. Add a streamer and take the first snapshot.** Use the box on the site, then trigger the poller by hand so you don't wait an hour. Velocity badges appear once a clip has two snapshots.
+**4. Add a streamer and take the first snapshot.** Use the box on the site, then trigger the poller by hand so you don't wait an hour. Velocity badges appear once a clip has two snapshots.
 
 ```bash
 aws lambda invoke --function-name "$(aws cloudformation describe-stacks --stack-name clippulse --query "Stacks[0].Outputs[?OutputKey=='PollerFunctionName'].OutputValue" --output text)" /dev/stdout
