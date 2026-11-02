@@ -1,4 +1,5 @@
 # ClipPulse
+![CI](https://github.com/a1issa369/clippulse/actions/workflows/ci.yml/badge.svg)
 
 Find Twitch clips that are **rising right now**, before they go stale, and save the best ones to a shotlist for your next edit.
 
