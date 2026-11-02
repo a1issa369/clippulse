@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dist/
+.aws-sam/
+samconfig.toml
+*.png.tmp
+backend/src/clippulse/static/
