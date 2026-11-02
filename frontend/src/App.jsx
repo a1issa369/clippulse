@@ -17,9 +17,9 @@ const DAY_RANGES = [
   { value: 7, label: "7 days" },
 ];
 const RISING_WINDOWS = [
-  { value: 12, label: "12 hours" },
   { value: 24, label: "24 hours" },
-  { value: 48, label: "48 hours" },
+  { value: 72, label: "3 days" },
+  { value: 168, label: "7 days" },
 ];
 
 function formatAsOf(iso) {
@@ -40,7 +40,7 @@ export default function App() {
   const [view, setView] = useState("rising");
   const [sort, setSort] = useState("velocity");
   const [days, setDays] = useState(7);
-  const [hours, setHours] = useState(48);
+  const [hours, setHours] = useState(72);
   const [shotlistOpen, setShotlistOpen] = useState(false);
   const openerRef = useRef(null);
   const playerOpenerRef = useRef(null);
