@@ -17,6 +17,7 @@ LOGIN_RE = re.compile(r"^[a-z0-9_]{3,25}$")
 BOARD_RE = re.compile(r"^[0-9a-f]{32}$")  # a uuid4 hex string: unguessable, so it acts as the key
 CLIP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 MAX_NOTE_LENGTH = 500
+HISTORY_SHOWN = 24  # snapshots sent to the browser per clip (a day of hourly polls)
 SORTS = ("velocity", "views", "new")
 
 
@@ -273,5 +274,7 @@ def _enrich(clip: dict, streamer: dict, now: datetime) -> dict:
         "thumbnail_url", "duration", "vod_offset")}
     public["streamer"] = streamer["login"]
     public["streamer_name"] = streamer["display_name"]
+    # Recent view-count snapshots as [timestamp, views] pairs, so the UI can draw a growth chart.
+    public["history"] = [[ts, int(views)] for ts, views in clip.get("history", [])][-HISTORY_SHOWN:]
     public.update(clip_metrics(clip, now))
     return public

@@ -110,3 +110,12 @@ def test_api_paths_never_fall_through_to_the_website(app):
 
 def test_website_rejects_writes(app):
     assert app.handle(event("POST", "/"))["statusCode"] == 405
+
+
+def test_csp_matches_the_cloudfront_policy_in_the_template():
+    """The Lambda and CloudFront modes must send the same policy, or the site behaves differently."""
+    from pathlib import Path
+    template = (Path(__file__).resolve().parents[2] / "template.yaml").read_text()
+    assert CSP in template
+    assert "frame-src https://clips.twitch.tv" in CSP        # the clip player embed, and nothing broader
+    assert "frame-ancestors 'none'" in CSP

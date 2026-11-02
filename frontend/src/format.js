@@ -58,9 +58,67 @@ export function safeUrl(url) {
   }
 }
 
-export function describeVelocity(clip) {
-  const basis = clip.recent_velocity === null || clip.recent_velocity === undefined
+export function velocityBasis(clip) {
+  return clip.recent_velocity === null || clip.recent_velocity === undefined
     ? "average since posted"
     : "gained over the last few hours";
-  return `${formatVelocity(clip.velocity)} views/hr ${basis}`;
+}
+
+export function describeVelocity(clip) {
+  return `${formatVelocity(clip.velocity)} views/hr ${velocityBasis(clip)}`;
+}
+
+// ---------------------------------------------------------------- growth chart
+
+// Turn the API's [[iso timestamp, views], ...] into sorted, de-duplicated {t, v} points.
+export function growthSeries(history) {
+  if (!Array.isArray(history)) return [];
+  const byTime = new Map();
+  for (const pair of history) {
+    if (!Array.isArray(pair)) continue;
+    const t = Date.parse(pair[0]);
+    const v = Number(pair[1]);
+    if (Number.isFinite(t) && Number.isFinite(v) && v >= 0) byTime.set(t, v);
+  }
+  return [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([t, v]) => ({ t, v }));
+}
+
+// SVG geometry for a small line chart. Returns null when there is nothing to draw (fewer than 2 points).
+export function sparkline(points, { width = 120, height = 32, pad = 3 } = {}) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const t0 = points[0].t;
+  const spanT = points[points.length - 1].t - t0 || 1;
+  const lo = Math.min(...points.map((p) => p.v));
+  const hi = Math.max(...points.map((p) => p.v));
+  const spanV = hi - lo;
+  const xy = points.map((p) => ({
+    x: pad + ((p.t - t0) / spanT) * (width - 2 * pad),
+    // A flat series sits mid-chart instead of dividing by zero.
+    y: spanV === 0 ? height / 2 : height - pad - ((p.v - lo) / spanV) * (height - 2 * pad),
+  }));
+  const round = (n) => Math.round(n * 10) / 10;
+  const line = xy.map((p, i) => `${i === 0 ? "M" : "L"}${round(p.x)} ${round(p.y)}`).join(" ");
+  const last = xy[xy.length - 1];
+  const area = `${line} L${round(last.x)} ${height} L${round(xy[0].x)} ${height} Z`;
+  return { line, area, last: { x: round(last.x), y: round(last.y) }, width, height };
+}
+
+// Plain-language caption, also used as the chart's accessible label.
+export function describeGrowth(points) {
+  if (!Array.isArray(points) || points.length < 2) return "Not enough history yet to chart growth.";
+  const first = points[0];
+  const last = points[points.length - 1];
+  const gained = Math.max(0, last.v - first.v);
+  const hours = (last.t - first.t) / 3_600_000;
+  const span = hours < 1 ? `${Math.max(1, Math.round(hours * 60))} minutes` : `${Math.round(hours * 10) / 10} hours`;
+  return `Gained ${formatCount(gained)} views over ${span}, from ${formatCount(first.v)} to ${formatCount(last.v)}.`;
+}
+
+// Twitch's official clip embed. The clip id goes into a URL, so only accept the characters Twitch uses,
+// and the page hostname is required by Twitch as the `parent` parameter.
+export function embedUrl(clipId, hostname) {
+  if (typeof clipId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(clipId)) return null;
+  if (typeof hostname !== "string" || !/^[A-Za-z0-9.-]{1,253}$/.test(hostname)) return null;
+  const params = new URLSearchParams({ clip: clipId, parent: hostname, autoplay: "false" });
+  return `https://clips.twitch.tv/embed?${params}`;
 }

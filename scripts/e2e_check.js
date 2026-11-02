@@ -51,6 +51,33 @@ const shots = process.argv[3] || ".";
   await page.waitForTimeout(400);
   assert.ok((await page.locator(".card").count()) <= 28);
 
+  // Growth charts on the cards, and the clip player. Twitch's player is stubbed so the check is offline,
+  // but the iframe still has to pass the page's Content Security Policy (frame-src) to load at all.
+  await context.route("https://clips.twitch.tv/**", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><p>stub twitch player</p>" }));
+  await page.getByRole("button", { name: "Rising everywhere" }).click();
+  await page.waitForSelector(".card .spark");
+  assert.match(await page.locator(".card .spark").first().getAttribute("aria-label"), /^Gained .* views over/);
+  const playButton = page.locator(".thumb-play").first();
+  await playButton.click();
+  await page.waitForSelector(".modal iframe");
+  const embed = new URL(await page.locator(".modal iframe").getAttribute("src"));
+  assert.equal(embed.origin + embed.pathname, "https://clips.twitch.tv/embed");
+  assert.equal(embed.searchParams.get("parent"), "localhost");
+  assert.match(embed.searchParams.get("clip"), /^[A-Za-z0-9_-]+$/);
+  const frame = page.frames().find((f) => f.url().startsWith("https://clips.twitch.tv/"));
+  await frame.waitForSelector("p");                                    // the framed page really loaded, so CSP allowed it
+  assert.ok(await page.locator(".modal .spark--large").isVisible(), "growth chart in the player");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close player");
+  for (let i = 0; i < 6; i += 1) {                                     // Tab never escapes the dialog
+    await page.keyboard.press("Tab");
+    assert.ok(await page.evaluate(() => !!document.activeElement.closest(".modal") || document.activeElement.tagName === "IFRAME"));
+  }
+  await page.screenshot({ path: path.join(shots, "ui-player.png") });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".modal", { state: "detached" });
+  assert.ok(await playButton.evaluate((el) => el === document.activeElement), "focus returns to the play button");
+
   // Save two clips, check count and button state
   await page.getByRole("button", { name: "Rising everywhere" }).click();
   await page.waitForSelector(".card .btn");

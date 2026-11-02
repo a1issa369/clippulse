@@ -94,6 +94,35 @@ def test_polling_builds_history_and_recent_velocity(service, twitch, clock):
     assert [c["id"] for c in service.clips_for("amy", sort="views")["clips"]] == ["giant", "rocket"]
 
 
+def test_clips_expose_their_view_history_for_charting(service, twitch, clock):
+    bid = twitch.add_streamer("amy")
+    twitch.add_clip(bid, "rocket", views=100, created_at=ts(3))
+    service.track_streamer("amy")
+    for views in (250, 400):
+        clock.advance(hours=1)
+        twitch.set_views(bid, "rocket", views)
+        service.poll_all()
+
+    clip = service.clips_for("amy")["clips"][0]
+    assert [v for _, v in clip["history"]] == [100, 250, 400]
+    assert all(isinstance(pair, list) and len(pair) == 2 for pair in clip["history"])
+    assert clip["history"] == sorted(clip["history"])                       # oldest first
+    assert service.rising()["clips"][0]["history"] == clip["history"]
+
+
+def test_history_sent_to_the_browser_is_capped(service, twitch, clock):
+    from clippulse.service import HISTORY_SHOWN
+    bid = twitch.add_streamer("amy")
+    twitch.add_clip(bid, "long", views=1, created_at=ts(2))
+    service.track_streamer("amy")
+    for n in range(HISTORY_SHOWN + 10):
+        clock.advance(minutes=30)
+        twitch.set_views(bid, "long", 2 + n)
+        service.poll_all()
+    history = service.clips_for("amy")["clips"][0]["history"]
+    assert len(history) == HISTORY_SHOWN and history[-1][1] == 2 + HISTORY_SHOWN + 9   # newest kept
+
+
 def test_poll_continues_after_a_streamer_error_but_stops_on_rate_limit(service, twitch):
     a = seeded(twitch, "aaa", 1)
     seeded(twitch, "bbb", 1)

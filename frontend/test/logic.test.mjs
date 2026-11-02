@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { ApiError, createApi } from "../src/api.js";
 import { BOARD_KEY, isBoardId, randomBoardId, resolveBoardId, shareUrl } from "../src/board.js";
 import {
-  describeVelocity, formatAge, formatCount, formatDuration, formatOffset, formatVelocity, safeUrl, trendInfo,
+  describeGrowth, describeVelocity, embedUrl, formatAge, formatCount, formatDuration, formatOffset, formatVelocity,
+  growthSeries, safeUrl, sparkline, trendInfo, velocityBasis,
 } from "../src/format.js";
 
 // ---------------------------------------------------------------- format
@@ -51,6 +52,12 @@ test("trendInfo and describeVelocity", () => {
   assert.equal(trendInfo(null), null);
   assert.match(describeVelocity({ velocity: 30, recent_velocity: 30 }), /last few hours/);
   assert.match(describeVelocity({ velocity: 4.2, recent_velocity: null }), /average since posted/);
+});
+
+test("velocityBasis explains where the number comes from", () => {
+  assert.equal(velocityBasis({ recent_velocity: 12 }), "gained over the last few hours");
+  assert.equal(velocityBasis({ recent_velocity: null }), "average since posted");
+  assert.equal(velocityBasis({}), "average since posted");
 });
 
 test("safeUrl only allows https", () => {
@@ -143,4 +150,50 @@ test("api turns network failures into a friendly error but keeps aborts", async 
   await assert.rejects(offline.listStreamers(), (err) => err instanceof ApiError && err.code === "network");
   const aborted = createApi(async () => { const e = new Error("x"); e.name = "AbortError"; throw e; });
   await assert.rejects(aborted.listStreamers(), (err) => err.name === "AbortError");
+});
+
+// ---------------------------------------------------------------- growth chart and embed
+test("growthSeries sorts, de-duplicates and drops bad rows", () => {
+  const series = growthSeries([
+    ["2026-11-02T20:00:00Z", 300], ["2026-11-02T18:00:00Z", 100], ["2026-11-02T19:00:00Z", "200"],
+    ["2026-11-02T19:00:00Z", 210], ["nonsense", 5], ["2026-11-02T21:00:00Z", -4], null, [],
+  ]);
+  assert.deepEqual(series.map((p) => p.v), [100, 210, 300]);
+  assert.ok(series[0].t < series[1].t && series[1].t < series[2].t);
+  assert.deepEqual(growthSeries(undefined), []);
+  assert.deepEqual(growthSeries("x"), []);
+});
+
+test("sparkline needs two points and stays inside its box", () => {
+  assert.equal(sparkline([]), null);
+  assert.equal(sparkline([{ t: 0, v: 1 }]), null);
+  const chart = sparkline([{ t: 0, v: 0 }, { t: 1000, v: 50 }, { t: 2000, v: 100 }], { width: 100, height: 40, pad: 4 });
+  assert.match(chart.line, /^M4 36 L50 20 L96 4$/);        // lowest value at the bottom, highest at the top
+  assert.deepEqual(chart.last, { x: 96, y: 4 });
+  assert.ok(chart.area.endsWith("Z"));
+  for (const n of chart.line.match(/-?\d+(\.\d+)?/g).map(Number)) assert.ok(n >= 0 && n <= 100);
+});
+
+test("sparkline handles a flat series and a single instant", () => {
+  const flat = sparkline([{ t: 0, v: 7 }, { t: 3600000, v: 7 }], { width: 100, height: 40, pad: 4 });
+  assert.match(flat.line, /^M4 20 L96 20$/);
+  const instant = sparkline([{ t: 5, v: 1 }, { t: 5, v: 9 }]);
+  assert.ok(instant && !instant.line.includes("NaN"));
+});
+
+test("describeGrowth", () => {
+  assert.match(describeGrowth([]), /Not enough history/);
+  const pts = [{ t: 0, v: 100 }, { t: 2 * 3600000, v: 1400 }];
+  assert.equal(describeGrowth(pts), "Gained 1.3K views over 2 hours, from 100 to 1.4K.");
+  assert.match(describeGrowth([{ t: 0, v: 5 }, { t: 30 * 60000, v: 9 }]), /over 30 minutes/);
+});
+
+test("embedUrl builds Twitch's embed link and refuses anything odd", () => {
+  assert.equal(embedUrl("TastyClip-1_x", "example.com"),
+    "https://clips.twitch.tv/embed?clip=TastyClip-1_x&parent=example.com&autoplay=false");
+  assert.equal(embedUrl("a/b", "example.com"), null);
+  assert.equal(embedUrl("clip&parent=evil.com", "example.com"), null);
+  assert.equal(embedUrl("ok", "bad host/"), null);
+  assert.equal(embedUrl("", "example.com"), null);
+  assert.equal(embedUrl(undefined, "example.com"), null);
 });

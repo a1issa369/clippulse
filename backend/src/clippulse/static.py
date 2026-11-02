@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 CSP = ("default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
-       "connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+       "connect-src 'self'; frame-src https://clips.twitch.tv; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 SECURITY_HEADERS = {
     "content-security-policy": CSP,

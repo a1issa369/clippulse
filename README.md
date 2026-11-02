@@ -10,6 +10,7 @@ Video editors and clip channels lose the window on a good moment: by the time a 
 ## What it does
 
 - **Rising feed.** Clips from the streamers you track, ranked by views gained per hour, with a Surging / Steady / Cooling badge.
+- **Watch and chart.** Click a thumbnail to play the clip in the page (Twitch's official embed, loaded only after you click), with a growth chart of its views over time. Cards show a small version of the same chart.
 - **Per-streamer view.** Sort by momentum, total views or newest, over the last 24 hours, 3 days or 7 days.
 - **Shotlist.** Save clips, jot a note on how you would cut each one (the VOD timestamp is shown so you can find the moment in the full stream), and export everything as a CSV.
 - **No accounts.** A shotlist is identified by a random, unguessable id kept in your browser. Share the link to share the list.
@@ -74,8 +75,8 @@ For frontend work, run `npm run watch` in `frontend/` next to the dev server.
 ## Tests
 
 ```bash
-cd backend && python3 -m pytest -q     # 178 tests, standard library + pytest only
-cd frontend && npm test                # 13 tests with Node's built-in runner
+cd backend && python3 -m pytest -q     # 183 tests, standard library + pytest only
+cd frontend && npm test                # 19 tests with Node's built-in runner
 python3 scripts/check_template.py template.yaml
 node scripts/e2e_check.js              # drives the real UI in Chromium against the demo server
 ```
@@ -155,7 +156,7 @@ Everything is pay-per-use. At the default limits (10 streamers, top 100 clips ea
 ```
 template.yaml                 SAM template: everything in AWS
 backend/src/clippulse/        scoring, twitch client, store, service, api, static site, poller
-backend/tests/                178 tests plus fakes
+backend/tests/                183 tests plus fakes
 backend/dev_server.py         local demo with fake channels
 frontend/src/                 React app (components, hooks, API client, pure helpers)
 frontend/test/                logic tests

@@ -3,7 +3,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { api } from "./api.js";
 import { shareUrl } from "./board.js";
 import {
-  describeVelocity, formatAge, formatCount, formatDuration, formatOffset, formatVelocity, safeUrl, trendInfo,
+  describeGrowth, describeVelocity, embedUrl, formatAge, formatCount, formatDuration, formatOffset, formatVelocity,
+  growthSeries, safeUrl, sparkline, trendInfo, velocityBasis,
 } from "./format.js";
 
 export function Logo() {
@@ -91,14 +92,38 @@ function Thumb({ clip }) {
     : <div className="thumb-fallback" aria-hidden="true" />;
 }
 
-export function ClipCard({ clip, saved, onSave, onRemove }) {
+// Views over time, drawn from the snapshots ClipPulse has taken. Renders nothing until there are two.
+export function Sparkline({ history, width = 120, height = 32, large = false }) {
+  const points = growthSeries(history);
+  const chart = sparkline(points, { width, height, pad: large ? 6 : 3 });
+  if (!chart) return null;
+  const label = describeGrowth(points);
+  return (
+    <svg className={large ? "spark spark--large" : "spark"} viewBox={`0 0 ${chart.width} ${chart.height}`}
+      width={large ? undefined : width} height={large ? undefined : height} role="img" aria-label={label} preserveAspectRatio="none">
+      <title>{label}</title>
+      <path d={chart.area} className="spark-area" />
+      <path d={chart.line} className="spark-line" vectorEffect="non-scaling-stroke" />
+      <circle cx={chart.last.x} cy={chart.last.y} r={large ? 3.5 : 2.5} className="spark-dot" />
+    </svg>
+  );
+}
+
+export function ClipCard({ clip, saved, onSave, onRemove, onPlay }) {
   const link = safeUrl(clip.url);
   const trend = trendInfo(clip.trend);
   const title = clip.title || "Untitled clip";
+  const canPlay = Boolean(embedUrl(clip.id, window.location.hostname));
   return (
     <article className="card">
       <div className="thumb">
-        {link ? <a href={link} target="_blank" rel="noopener noreferrer" tabIndex={-1} aria-hidden="true"><Thumb clip={clip} /></a> : <Thumb clip={clip} />}
+        {canPlay ? (
+          <button type="button" className="thumb-play" onClick={(event) => onPlay(clip, event.currentTarget)}
+            aria-label={`Play ${title}`}>
+            <Thumb clip={clip} />
+            <span className="play-icon" aria-hidden="true">&#9654;</span>
+          </button>
+        ) : link ? <a href={link} target="_blank" rel="noopener noreferrer" tabIndex={-1} aria-hidden="true"><Thumb clip={clip} /></a> : <Thumb clip={clip} />}
         {trend && <span className={`badge badge--${trend.tone}`}>{trend.label}</span>}
         <span className="badge badge--time">{formatDuration(clip.duration)}</span>
       </div>
@@ -113,6 +138,7 @@ export function ClipCard({ clip, saved, onSave, onRemove }) {
           </span>
           <span className="stat-muted">{formatCount(clip.view_count)} views · {formatAge(clip.age_hours)}</span>
         </div>
+        <Sparkline history={clip.history} />
         {saved ? (
           <button type="button" className="btn btn--saved" onClick={() => onRemove(clip.id)} aria-label={`Remove ${title} from shotlist`}>
             Saved to shotlist
@@ -124,6 +150,72 @@ export function ClipCard({ clip, saved, onSave, onRemove }) {
         )}
       </div>
     </article>
+  );
+}
+
+// Plays a clip with Twitch's own embed. The iframe is only created once a viewer clicks play,
+// so browsing the feed never loads anything from Twitch's player.
+export function ClipModal({ clip, saved, onSave, onRemove, onClose }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+  const headingId = useId();
+  const title = clip.title || "Untitled clip";
+  const src = embedUrl(clip.id, window.location.hostname);
+  const link = safeUrl(clip.url);
+  const offset = formatOffset(clip.vod_offset);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function onKey(event) {
+      if (event.key === "Escape") { onClose(); return; }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll("a[href], button:not([disabled]), iframe")];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = previousOverflow; };
+  }, [onClose]);
+
+  return (
+    <div className="modal-wrap" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby={headingId} ref={dialogRef}>
+        <header className="modal-head">
+          <div>
+            <h2 id={headingId}>{title}</h2>
+            <p className="card-sub">{clip.streamer_name}{clip.creator_name ? ` · clipped by ${clip.creator_name}` : ""}</p>
+          </div>
+          <button ref={closeRef} type="button" className="icon-btn" onClick={onClose} aria-label="Close player">×</button>
+        </header>
+        <div className="player">
+          {src ? (
+            <iframe src={src} title={`Twitch clip: ${title}`} allowFullScreen referrerPolicy="strict-origin-when-cross-origin" />
+          ) : <p className="empty-note">This clip cannot be embedded.</p>}
+        </div>
+        <div className="modal-stats">
+          <p><strong>{formatVelocity(clip.velocity)}</strong> views/hr <span className="stat-muted">({velocityBasis(clip)})</span></p>
+          <p className="stat-muted">{formatCount(clip.view_count)} views · {formatAge(clip.age_hours)}{offset ? ` · starts ${offset} into the VOD` : ""}</p>
+        </div>
+        <section className="growth" aria-label="View growth">
+          <h3>Growth since ClipPulse started watching</h3>
+          <Sparkline history={clip.history} width={560} height={120} large />
+          <p className="stat-muted">{describeGrowth(growthSeries(clip.history))}</p>
+        </section>
+        <div className="modal-actions">
+          {saved ? (
+            <button type="button" className="btn btn--saved" onClick={() => onRemove(clip.id)}>Saved to shotlist</button>
+          ) : (
+            <button type="button" className="btn btn--primary" onClick={() => onSave(clip)}>Add to shotlist</button>
+          )}
+          {link && <a className="btn" href={link} target="_blank" rel="noopener noreferrer">Open on Twitch</a>}
+        </div>
+      </div>
+    </div>
   );
 }
 

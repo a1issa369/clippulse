@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 
 import { resolveBoardId } from "./board.js";
 import {
-  ClipCard, Logo, Segmented, Shotlist, SkeletonGrid, StreamerBar, TrackForm,
+  ClipCard, ClipModal, Logo, Segmented, Shotlist, SkeletonGrid, StreamerBar, TrackForm,
 } from "./components.jsx";
 import { useBoard, useFeed, useStreamers } from "./hooks.js";
 
@@ -43,6 +43,8 @@ export default function App() {
   const [hours, setHours] = useState(48);
   const [shotlistOpen, setShotlistOpen] = useState(false);
   const openerRef = useRef(null);
+  const playerOpenerRef = useRef(null);
+  const [playing, setPlaying] = useState(null);
 
   const feed = useFeed({ view, sort, days, hours });
   const savedIds = useMemo(() => new Set(board.items.map((i) => i.clip_id)), [board.items]);
@@ -56,6 +58,20 @@ export default function App() {
     setShotlistOpen(false);
     openerRef.current?.focus();
   }, []);
+
+  const playClip = useCallback((clip, trigger) => {
+    playerOpenerRef.current = trigger;
+    setPlaying(clip.id);
+  }, []);
+
+  const closePlayer = useCallback(() => {
+    setPlaying(null);
+    const opener = playerOpenerRef.current;
+    if (opener && document.contains(opener)) opener.focus();
+  }, []);
+
+  // Look the clip up in the current feed each render so the saved state and numbers stay live.
+  const playingClip = playing ? feed.clips.find((c) => c.id === playing) ?? null : null;
 
   const noStreamers = streamerState.status === "ready" && streamerState.streamers.length === 0;
   const asOf = formatAsOf(feed.asOf);
@@ -117,7 +133,8 @@ export default function App() {
             ) : (
               <div className="grid">
                 {feed.clips.map((clip) => (
-                  <ClipCard key={clip.id} clip={clip} saved={savedIds.has(clip.id)} onSave={board.add} onRemove={board.remove} />
+                  <ClipCard key={clip.id} clip={clip} saved={savedIds.has(clip.id)} onSave={board.add} onRemove={board.remove}
+                    onPlay={playClip} />
                 ))}
               </div>
             )}
@@ -132,6 +149,11 @@ export default function App() {
           ClipPulse is an independent project and is not affiliated with or endorsed by Twitch.
         </p>
       </footer>
+
+      {playingClip && (
+        <ClipModal clip={playingClip} saved={savedIds.has(playingClip.id)} onSave={board.add} onRemove={board.remove}
+          onClose={closePlayer} />
+      )}
 
       <Shotlist open={shotlistOpen} onClose={closeShotlist} board={board} boardId={boardId} />
     </div>
