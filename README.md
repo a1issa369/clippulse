@@ -217,7 +217,7 @@ The message should appear in Discord within seconds, and the execution shows up 
 - **Deduplication uses the rate-limit counter instead of a new table or field.** One atomic conditional write per clip says "announced already", with no extra schema, at the cost of the dedupe window being a fixed number of days. If queueing fails after the counter is spent, that clip's alert is lost rather than duplicated, which is the right way to fail for a notification.
 - **CSV export neutralises formulas.** Clip titles are written by strangers, so cells starting with `=`, `+`, `-` or `@` are prefixed with an apostrophe before they reach a spreadsheet.
 
-## Difficulties along the way
+## Things that broke along the way
 
 What went wrong or surprised me while building this, and what I changed because of it.
 
@@ -230,6 +230,8 @@ What went wrong or surprised me while building this, and what I changed because 
 - **Confusing duplicate text on cards.** An early card read "360 views/hr (360 views/hr gained...)" because two code paths each explained the same number. I pulled the wording into one helper and added a test.
 - **Discord rejects the default Python user agent.** A plain `urllib` request to a webhook is refused by Discord's edge, so the notifier sends its own `User-Agent`. It is the kind of failure no unit test with a fake HTTP function can show, which is why the README walks through a real test execution after deploying.
 - **Telling a retryable failure from a hopeless one.** Retrying a rejected webhook five times is wasted work and noise, while giving up on a 429 loses the alert. The notifier raises two differently named exceptions, `DiscordRetryable` and `DiscordRejected`, and the state machine retries only the first. Step Functions matches on the exception class name, so a test ties the template to the code and fails if either is renamed.
+- **Promoting a visitor streamer to pinned left a button that did nothing.** When the owner pinned a streamer a visitor had added, the stored owner id stayed on the record, so that visitor still saw a remove (×) button and clicking it returned a 403. The fix was to clear the owner id when a streamer is promoted and to make the `mine` flag false for anything pinned, each with its own test. It only showed up by using the live site, not by reading the code.
+- **My own tests missed bugs until I broke the code on purpose.** For each new behavior I temporarily removed the rule and checked that a test failed. Twice nothing failed: nothing checked that surge alerts skip visitor-added streamers, and nothing checked that a clip that is merely fast, without an upward trend, is not a surge. I wrote those tests, so a passing suite now says more than it did.
 - **Tooling, not just code.** The first push to GitHub failed with an HTTP 400 until I switched git to HTTP/1.1 with a larger post buffer, and a later push was rejected because the remote had moved on. Small, but it is part of shipping.
 
 ## Known limits
