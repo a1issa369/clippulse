@@ -212,3 +212,25 @@ def test_unidentified_visitors_share_one_search_bucket(settings, store, twitch, 
     svc.track_streamer("amy")
     with pytest.raises(RateLimited):
         svc.track_streamer("amy")
+
+
+# --- pinning a streamer a visitor already added ------------------------------------------------------
+
+def test_pinning_a_visitors_streamer_makes_it_the_owners_and_not_removable(settings, store, twitch, clock):
+    stock(twitch, "amy")
+    visitor = make(settings, store, twitch, clock)               # amy is not pinned yet
+    visitor.track_streamer("amy", client_id="v1")
+    assert visitor.list_streamers("v1")[0]["mine"] is True
+    owner = make(settings, store, twitch, clock, pinned_streamers=("amy",))
+    owner.ensure_pinned()
+    streamer = owner.store.get_streamer("amy")
+    assert streamer["pinned"] is True and "added_by" not in streamer and "expires_at" not in streamer
+    assert owner.list_streamers("v1")[0]["mine"] is False        # no remove button for the old adder
+    with pytest.raises(Forbidden):
+        owner.remove_streamer("amy", "v1")
+
+
+def test_mine_is_false_for_pinned_even_if_an_old_owner_id_is_still_stored(settings, store, twitch, clock):
+    store.put_streamer({"login": "amy", "display_name": "Amy", "broadcaster_id": "1", "pinned": True, "added_by": "v1"})
+    svc = make(settings, store, twitch, clock)
+    assert svc.list_streamers("v1")[0]["mine"] is False

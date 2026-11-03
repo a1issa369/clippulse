@@ -17,7 +17,7 @@ Parameters:
     Description: How often to snapshot view counts. Velocity needs at least two snapshots per clip.
   PinnedStreamers:
     Type: String
-    Default: "rdcworld1,rdcgaming,kaicenat,xqc"
+    Default: "pokimane,rdcgaming,kaicenat,xqc"
     Description: Comma-separated Twitch logins that are always tracked and never expire. Applied on the next hourly run (or invoke the poller by hand).
   MaxStreamers:
     Type: Number

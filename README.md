@@ -76,7 +76,7 @@ For frontend work, run `npm run watch` in `frontend/` next to the dev server.
 ## Tests
 
 ```bash
-cd backend && python3 -m pytest -q     # 359 tests, standard library + pytest only
+cd backend && python3 -m pytest -q     # 363 tests, standard library + pytest only
 cd frontend && npm test                # 21 tests with Node's built-in runner
 python3 scripts/check_template.py template.yaml
 node scripts/e2e_check.js              # drives the real UI in Chromium against the demo server
@@ -140,7 +140,7 @@ Anyone can search any Twitch streamer, and the design keeps one visitor (or a sc
 
 | Piece | Rule |
 | --- | --- |
-| Pinned streamers | The `PinnedStreamers` template parameter (default `rdcworld1,rdcgaming,kaicenat,xqc`). Always tracked, never expire. Applied by the hourly run, or run the poller by hand. |
+| Pinned streamers | The `PinnedStreamers` template parameter (default `pokimane,rdcgaming,kaicenat,xqc`). Always tracked, never expire. Applied by the hourly run, or run the poller by hand. |
 | Visitor streamers | Tracked for 48 hours after anyone last looked at them. Looking extends the stay, rewritten at most once an hour. |
 | Shared pool | At most `MaxStreamers` (default 10) visitor streamers at once. When full, only one nobody has looked at for 6 hours can be replaced; otherwise the search is refused with a clear message. A search for a channel that does not exist never evicts anyone. |
 | New lookups | Only a streamer ClipPulse is not already tracking costs anything. Each visitor (a hash of their IP, never stored raw) gets 5 per 10 minutes and everyone together gets 30 per hour, counted with an atomic conditional write in DynamoDB. Misspelled and made-up names count too. Rate-limited replies are HTTP 429 with a `Retry-After` header. |
@@ -244,7 +244,7 @@ What went wrong or surprised me while building this, and what I changed because 
 ```
 template.yaml                 SAM template: everything in AWS
 backend/src/clippulse/        scoring, twitch client, store, service, api, static site, poller, surge alerts
-backend/tests/                359 tests plus fakes
+backend/tests/                363 tests plus fakes
 backend/dev_server.py         local demo with fake channels
 frontend/src/                 React app (components, hooks, API client, pure helpers)
 frontend/test/                logic tests

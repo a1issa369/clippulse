@@ -240,7 +240,7 @@ class ClipService:
                 existing = self.store.get_streamer(login)
                 if existing:
                     if not existing.get("pinned") or "expires_at" in existing:
-                        pinned = {k: v for k, v in existing.items() if k not in ("expires_at", "last_seen_at", "ttl")}
+                        pinned = {k: v for k, v in existing.items() if k not in ("expires_at", "last_seen_at", "ttl", "added_by")}
                         self.store.put_streamer({**pinned, "pinned": True})
                 else:
                     user = self._twitch_provider().get_user(login)
@@ -496,7 +496,7 @@ def _public_streamer(streamer: dict, client_id: Optional[str] = None) -> dict:
     public = {k: streamer.get(k) for k in keys}
     public["pinned"] = ClipService._is_pinned(streamer)
     # Only a yes/no for the caller. The stored visitor id itself is never sent to anyone.
-    public["mine"] = bool(client_id) and streamer.get("added_by") == client_id
+    public["mine"] = bool(client_id) and not public["pinned"] and streamer.get("added_by") == client_id
     return public
 
 
