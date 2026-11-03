@@ -65,7 +65,12 @@ export function TrackForm({ onTrack, prominent = false }) {
   );
 }
 
-export function StreamerBar({ streamers, view, onView, onTrack }) {
+export function StreamerBar({ streamers, view, onView, onTrack, onRemove }) {
+  const [removeError, setRemoveError] = useState(null);
+  const remove = async (s) => {
+    setRemoveError(null);
+    try { await onRemove(s.login); } catch (err) { setRemoveError(err.message); }
+  };
   return (
     <nav className="streamers" aria-label="Streamers">
       <div className="chips">
@@ -73,11 +78,18 @@ export function StreamerBar({ streamers, view, onView, onTrack }) {
           Rising everywhere
         </button>
         {streamers.map((s) => (
-          <button key={s.login} type="button" className="chip" aria-pressed={view === s.login} onClick={() => onView(s.login)}>
-            {s.display_name}
-          </button>
+          <span key={s.login} className={s.mine ? "chip-wrap chip-wrap--mine" : "chip-wrap"}>
+            <button type="button" className="chip" aria-pressed={view === s.login} onClick={() => onView(s.login)}>
+              {s.display_name}
+            </button>
+            {s.mine && (
+              <button type="button" className="chip-x" aria-label={`Stop tracking ${s.display_name}`}
+                title="Stop tracking" onClick={() => remove(s)}>×</button>
+            )}
+          </span>
         ))}
       </div>
+      {removeError && <p className="banner banner--error" role="alert">{removeError}</p>}
       <TrackForm onTrack={onTrack} />
     </nav>
   );

@@ -270,3 +270,66 @@ def test_run_hourly_reports_everything(settings, store, twitch, clock):
     summary = service.run_hourly()
     assert summary["streamers"] == 2 and summary["errors"] == [] and summary["pruned"] == 0
     assert summary["pinned"]["ensured"] == 1
+
+
+# --- real accounts with nothing to show --------------------------------------------------------------------
+
+def test_an_account_with_no_recent_clips_is_not_tracked(settings, store, twitch, clock):
+    from clippulse.service import NoClips
+    service = make(settings, store, twitch, clock, lookups_per_client=2)
+    twitch.add_streamer("quietone", display="QuietOne")                  # exists on Twitch, has no clips
+    with pytest.raises(NoClips) as err:
+        service.track_streamer("quietone", client_id="v")
+    assert err.value.status == 404 and err.value.code == "no_clips" and "QuietOne" in err.value.message
+    assert service.list_streamers() == [] and store.get_streamer("quietone") is None
+    with pytest.raises(NoClips):
+        service.track_streamer("quietone", client_id="v")
+    with pytest.raises(RateLimited):                                     # it still cost a lookup each time
+        service.track_streamer("quietone", client_id="v")
+
+
+def test_clips_older_than_the_lookback_do_not_count(service, twitch, clock):
+    from clippulse.service import NoClips
+    bid = twitch.add_streamer("oldtimer")
+    twitch.add_clip(bid, "ancient", 5000, ts(24 * 30))                   # a month old: outside the 7 day lookback
+    with pytest.raises(NoClips):
+        service.track_streamer("oldtimer")
+
+
+def test_a_clipless_search_does_not_push_anyone_out(service, twitch, clock):
+    from clippulse.service import NoClips
+    stock(twitch, "aaa", "bbb", "ccc")
+    twitch.add_streamer("quietone")
+    for name in ("aaa", "bbb", "ccc"):
+        service.track_streamer(name)
+    clock.advance(hours=10)                                              # all idle, so a slot would be freed...
+    with pytest.raises(NoClips):
+        service.track_streamer("quietone")
+    assert [s["login"] for s in service.list_streamers()] == ["aaa", "bbb", "ccc"]   # ...but nobody was replaced
+
+
+def test_a_twitch_hiccup_while_fetching_clips_still_keeps_the_streamer(service, twitch, clock):
+    bid = twitch.add_streamer("amy")
+    twitch.add_clip(bid, "c1", 10, ts(1))
+    twitch.fail_for[bid] = TwitchError("temporary")
+    result = service.track_streamer("amy")
+    assert result["created"] is True and result["clips_ingested"] == 0
+    assert [s["login"] for s in service.list_streamers()] == ["amy"]
+
+
+def test_the_hourly_run_drops_visitor_streamers_that_have_no_clips_left(settings, store, twitch, clock):
+    service = make(settings, store, twitch, clock, pinned_streamers=("quietpin",), temp_ttl_hours=24 * 30)
+    twitch.add_streamer("quietpin")                                      # pinned: kept even with no clips
+    stock(twitch, "amy")
+    service.ensure_pinned()
+    service.track_streamer("amy")
+    clock.advance(days=8)                                                # amy's only clip is now older than 7 days
+    summary = service.run_hourly()
+    assert summary["emptied"] == 1
+    assert [s["login"] for s in service.list_streamers()] == ["quietpin"]
+
+
+def test_streamers_with_clips_survive_the_empty_check(service, twitch, clock):
+    stock(twitch, "amy")
+    service.track_streamer("amy")
+    assert service.prune_empty() == 0 and len(service.list_streamers()) == 1

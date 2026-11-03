@@ -165,3 +165,57 @@ def test_visitors_are_told_apart_by_a_hash_of_their_ip(service, twitch):
     assert post("bob", "198.51.100.9") == 201         # different address: its own allowance
     stored = [item for item in service.store._counters] if hasattr(service.store, "_counters") else []
     assert all("203.0.113.7" not in str(key) for key in stored)   # the raw IP is never used as a key
+
+
+def test_a_real_account_without_clips_gets_a_clear_404(app, twitch):
+    twitch.add_streamer("quietone", display="QuietOne")
+    r = call(app, "POST", "/api/streamers", {"login": "quietone"})
+    assert r["statusCode"] == 404 and data(r)["error"]["code"] == "no_clips"
+    assert "QuietOne" in data(r)["error"]["message"]
+
+
+# --- visitors: ownership and removal over HTTP --------------------------------------------------------
+
+def as_visitor(app, ip, method, path, body=None):
+    event = {"rawPath": path, "requestContext": {"http": {"method": method, "path": path, "sourceIp": ip}}}
+    if body is not None:
+        event["body"] = json.dumps(body)
+    return app.handle(event)
+
+
+def test_a_visitor_can_add_see_and_remove_their_own_streamer(app, twitch):
+    bid = twitch.add_streamer("amy")
+    twitch.add_clip(bid, "a1", 50, ts(1))
+    added = as_visitor(app, "203.0.113.7", "POST", "/api/streamers", {"login": "amy"})
+    assert added["statusCode"] == 201 and data(added)["streamer"]["mine"] is True
+    mine = data(as_visitor(app, "203.0.113.7", "GET", "/api/streamers"))["streamers"]
+    others = data(as_visitor(app, "198.51.100.9", "GET", "/api/streamers"))["streamers"]
+    assert mine[0]["mine"] is True and others[0]["mine"] is False
+    removed = as_visitor(app, "203.0.113.7", "DELETE", "/api/streamers/amy")
+    assert removed["statusCode"] == 204 and not removed.get("body")
+    assert data(as_visitor(app, "203.0.113.7", "GET", "/api/streamers"))["streamers"] == []
+
+
+def test_deleting_someone_elses_streamer_is_403(app, twitch):
+    twitch.add_clip(twitch.add_streamer("amy"), "a1", 50, ts(1))
+    as_visitor(app, "203.0.113.7", "POST", "/api/streamers", {"login": "amy"})
+    r = as_visitor(app, "198.51.100.9", "DELETE", "/api/streamers/amy")
+    assert r["statusCode"] == 403 and data(r)["error"]["code"] == "forbidden"
+
+
+def test_deleting_without_a_known_address_is_403_and_unknown_is_404(app, twitch):
+    twitch.add_clip(twitch.add_streamer("amy"), "a1", 50, ts(1))
+    call(app, "POST", "/api/streamers", {"login": "amy"})
+    assert call(app, "DELETE", "/api/streamers/amy")["statusCode"] == 403
+    assert as_visitor(app, "203.0.113.7", "DELETE", "/api/streamers/ghost")["statusCode"] == 404
+
+
+def test_delete_is_rate_limited_with_retry_after(service):
+    from dataclasses import replace
+    from clippulse.service import ClipService
+    limited = ClipService(service.store, service._twitch_provider, replace(service.settings, removals_per_client=1),
+                          clock=service._clock)
+    app = App(lambda: limited)
+    assert as_visitor(app, "203.0.113.7", "DELETE", "/api/streamers/ghost")["statusCode"] == 404
+    r = as_visitor(app, "203.0.113.7", "DELETE", "/api/streamers/ghost")
+    assert r["statusCode"] == 429 and int(r["headers"]["retry-after"]) > 0

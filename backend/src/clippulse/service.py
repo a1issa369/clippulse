@@ -3,6 +3,7 @@ client factory, so the same code runs in Lambda, in tests, and in the dev server
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import logging
 import math
@@ -46,12 +47,20 @@ class LimitReached(ServiceError):
     status, code = 409, "limit_reached"
 
 
+class Forbidden(ServiceError):
+    status, code = 403, "forbidden"
+
+
 class RateLimited(ServiceError):
     status, code = 429, "rate_limited"
 
     def __init__(self, message: str, retry_after: int):
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class NoClips(ServiceError):
+    status, code = 404, "no_clips"
 
 
 class UpstreamError(ServiceError):
@@ -72,6 +81,14 @@ class ClipService:
 
     def _now(self) -> datetime:
         return self._clock()
+
+    # -- visitors ---------------------------------------------------------
+    def client_id(self, ip: Optional[str]) -> Optional[str]:
+        """An anonymous, stable id for a visitor: a salted hash of their IP. None when the address is unknown,
+        which switches off ownership (nothing is "yours") but not the rate limits."""
+        if not ip:
+            return None
+        return hashlib.sha256(f"{self.settings.client_salt}|{ip}".encode("utf-8")).hexdigest()[:20]
 
     # -- validation -------------------------------------------------------
     @staticmethod
@@ -126,9 +143,10 @@ class ClipService:
         """What the scheduled poller does: apply the pinned list, drop expired visitor streamers, snapshot the rest."""
         pinned = self.ensure_pinned()
         pruned = self.prune_expired()
+        emptied = self.prune_empty()
         summary = self.poll_all()
         summary["errors"] = pinned.pop("errors") + summary["errors"]
-        return {**summary, "pinned": pinned, "pruned": pruned}
+        return {**summary, "pinned": pinned, "pruned": pruned, "emptied": emptied}
 
     # -- who is tracked ---------------------------------------------------
     # Two kinds of streamer share one table:
@@ -197,6 +215,15 @@ class ClipService:
                 result["errors"].append({"login": login, "error": str(err)})
         return result
 
+    def prune_empty(self) -> int:
+        """Drop visitor streamers that have no recent clips left: they only cost polling and a slot."""
+        since = format_ts(self._now() - timedelta(days=self.settings.lookback_days))
+        gone = [s["login"] for s in self._active_streamers()
+                if not self._is_pinned(s) and not self.store.query_clips(s["broadcaster_id"], since)]
+        for login in gone:
+            self.store.delete_streamer(login)
+        return len(gone)
+
     def prune_expired(self) -> int:
         now = self._now()
         gone = [s["login"] for s in self.store.list_streamers() if not self._is_active(s, now)]
@@ -209,12 +236,15 @@ class ClipService:
         """Search for a streamer. Anyone can; new ones are tracked for a while, within hard limits."""
         login = self.normalize_login(raw_login)
         now = self._now()
+        self._take(f"search-client-{client_id or 'unknown'}", self.settings.client_window_seconds,
+                   self.settings.searches_per_client, now, "You are searching too quickly.")
         existing = self.store.get_streamer(login)
         if existing and self._is_active(existing, now):
             existing = self._touch(existing, now)
-            return {"streamer": _public_streamer(existing), "created": False, "clips_ingested": 0}
+            return {"streamer": _public_streamer(existing, client_id), "created": False, "clips_ingested": 0}
 
         # A streamer we are not tracking: this is the expensive path, so every limit applies here.
+        self._check_visitor_allowance(client_id, now)
         victim = self._room_for_one_more(now)
         self._take_lookup(client_id or "unknown", now)
         try:
@@ -225,16 +255,49 @@ class ClipService:
             raise UpstreamError("Could not reach Twitch. Try again shortly.")
         if not user:
             raise NotFound(f"No Twitch channel named {login}.")
-        if victim:
-            self.store.delete_streamer(victim["login"])
         streamer = {**user, "added_at": format_ts(now), "last_polled_at": None, **self._temporary_stay(now)}
+        if client_id:
+            streamer["added_by"] = client_id
         self.store.put_streamer(streamer)
         try:
-            ingested = self.ingest(streamer)
+            ingested: Optional[int] = self.ingest(streamer)
         except TwitchError:
-            ingested = 0  # the hourly poll will fill it in
-        return {"streamer": _public_streamer(self.store.get_streamer(login) or streamer),
-                "created": True, "clips_ingested": ingested}
+            ingested = None  # Twitch hiccup: keep them, the hourly poll will fill it in
+        if ingested == 0:
+            # A real account with no recent clips (most accounts are like this). Do not spend a slot on it,
+            # and do not push anyone out for it.
+            self.store.delete_streamer(login)
+            raise NoClips(f"{user.get('display_name') or login} has no clips from the last "
+                          f"{self.settings.lookback_days} days, so there is nothing to show yet.")
+        if victim:
+            self.store.delete_streamer(victim["login"])
+        return {"streamer": _public_streamer(self.store.get_streamer(login) or streamer, client_id),
+                "created": True, "clips_ingested": ingested or 0}
+
+    def remove_streamer(self, raw_login: Any, client_id: Optional[str]) -> None:
+        """Visitors can stop tracking streamers they added. Pinned ones and other visitors' are not theirs to remove."""
+        login = self.normalize_login(raw_login)
+        now = self._now()
+        if not client_id:
+            raise Forbidden("Streamers can only be removed by the visitor who added them.")
+        self._take(f"remove-client-{client_id}", self.settings.client_window_seconds,
+                   self.settings.removals_per_client, now, "You are removing streamers too quickly.")
+        streamer = self.store.get_streamer(login)
+        if not streamer or not self._is_active(streamer, now):
+            raise NotFound(f"{login} is not being tracked right now.")
+        if self._is_pinned(streamer):
+            raise Forbidden("Pinned streamers are chosen by the site owner and cannot be removed here.")
+        if streamer.get("added_by") != client_id:
+            raise Forbidden("You can only remove streamers you added.")
+        self.store.delete_streamer(login)
+
+    def _check_visitor_allowance(self, client_id: Optional[str], now: datetime) -> None:
+        if not client_id:
+            return
+        mine = [s for s in self._active_streamers() if not self._is_pinned(s) and s.get("added_by") == client_id]
+        if len(mine) >= self.settings.max_per_client:
+            raise LimitReached(f"You already have {len(mine)} streamers of your own. "
+                               "Remove one to add another.")
 
     def _room_for_one_more(self, now: datetime) -> Optional[dict]:
         """None when there is a free slot; otherwise the idle streamer to replace, or LimitReached."""
@@ -249,20 +312,22 @@ class ClipService:
                                "listed, or come back in a few hours.")
         return min(idle, key=lambda s: (s.get("last_seen_at", ""), s["login"]))
 
-    def _take_lookup(self, client_id: str, now: datetime) -> None:
-        cfg, t = self.settings, now.timestamp()
-        if not self.store.take_token(f"lookup-client-{client_id}", cfg.client_window_seconds, cfg.lookups_per_client, t):
-            wait = _seconds_left(t, cfg.client_window_seconds)
-            raise RateLimited(f"You are adding streamers too quickly. Try again in {_wait_text(wait)}.", wait)
-        if not self.store.take_token("lookup-global", cfg.global_window_seconds, cfg.lookups_global, t):
-            wait = _seconds_left(t, cfg.global_window_seconds)
-            raise RateLimited("ClipPulse has looked up a lot of new streamers in the last hour. "
-                              f"Try again in {_wait_text(wait)}.", wait)
+    def _take(self, bucket: str, window: int, limit: int, now: datetime, message: str) -> None:
+        if not self.store.take_token(bucket, window, limit, now.timestamp()):
+            wait = _seconds_left(now.timestamp(), window)
+            raise RateLimited(f"{message} Try again in {_wait_text(wait)}.", wait)
 
-    def list_streamers(self) -> List[dict]:
+    def _take_lookup(self, client_id: str, now: datetime) -> None:
+        cfg = self.settings
+        self._take(f"lookup-client-{client_id}", cfg.client_window_seconds, cfg.lookups_per_client, now,
+                   "You are adding streamers too quickly.")
+        self._take("lookup-global", cfg.global_window_seconds, cfg.lookups_global, now,
+                   "ClipPulse has looked up a lot of new streamers in the last hour.")
+
+    def list_streamers(self, client_id: Optional[str] = None) -> List[dict]:
         rows = self._active_streamers()
         rows.sort(key=lambda s: (not self._is_pinned(s), s["login"]))
-        return [_public_streamer(s) for s in rows]
+        return [_public_streamer(s, client_id) for s in rows]
 
     # -- reading clips ----------------------------------------------------
     def clips_for(self, raw_login: Any, days: int = 7, sort: str = "velocity", limit: int = 50) -> Dict[str, Any]:
@@ -386,10 +451,12 @@ def _clamp(value: Any, low: int, high: int) -> int:
     return max(low, min(high, number))
 
 
-def _public_streamer(streamer: dict) -> dict:
+def _public_streamer(streamer: dict, client_id: Optional[str] = None) -> dict:
     keys = ("login", "display_name", "profile_image_url", "last_polled_at")
     public = {k: streamer.get(k) for k in keys}
     public["pinned"] = ClipService._is_pinned(streamer)
+    # Only a yes/no for the caller. The stored visitor id itself is never sent to anyone.
+    public["mine"] = bool(client_id) and streamer.get("added_by") == client_id
     return public
 
 

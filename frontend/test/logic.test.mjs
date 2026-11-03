@@ -205,3 +205,13 @@ test("a throttled response gets a friendly message, and the server's own message
     json: async () => ({ error: { code: "rate_limited", message: "Try again in 4 minutes." } }) }));
   await assert.rejects(own.trackStreamer("amy"), (err) => err.code === "rate_limited" && err.message === "Try again in 4 minutes.");
 });
+
+test("removeStreamer sends a DELETE for the encoded login and treats 204 as success", async () => {
+  const seen = [];
+  const api = createApi(async (url, init) => { seen.push([url, init.method]); return { ok: true, status: 204 }; });
+  assert.equal(await api.removeStreamer("a b"), null);
+  assert.deepEqual(seen, [["/api/streamers/a%20b", "DELETE"]]);
+  const refused = createApi(async () => ({ ok: false, status: 403,
+    json: async () => ({ error: { code: "forbidden", message: "You can only remove streamers you added." } }) }));
+  await assert.rejects(refused.removeStreamer("amy"), (err) => err.status === 403 && /only remove/.test(err.message));
+});

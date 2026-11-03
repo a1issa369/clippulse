@@ -43,6 +43,7 @@ export function createApi(fetchFn = (...args) => globalThis.fetch(...args), base
   return {
     listStreamers: (signal) => request("/streamers", { signal }),
     trackStreamer: (login) => request("/streamers", { method: "POST", body: { login } }),
+    removeStreamer: (login) => request(`/streamers/${encodeURIComponent(login)}`, { method: "DELETE" }),
     getClips: (login, { sort, days }, signal) =>
       request(`/streamers/${encodeURIComponent(login)}/clips${query({ sort, days })}`, { signal }),
     getRising: ({ hours }, signal) => request(`/rising${query({ hours, limit: 24 })}`, { signal }),

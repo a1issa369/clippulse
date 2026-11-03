@@ -57,6 +57,7 @@ Globals:
         TWITCH_CLIENT_SECRET_PARAM: !Ref TwitchClientSecretParam
         MAX_STREAMERS: !Ref MaxStreamers
         PINNED_STREAMERS: !Ref PinnedStreamers
+        CLIENT_SALT: !Ref AWS::StackId   # mixed into the visitor hash so stored ids cannot be reversed from a list of IPs
 
 Resources:
   # ---------------------------------------------------------------- data

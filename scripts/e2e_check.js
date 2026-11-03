@@ -137,7 +137,7 @@ const shots = process.argv[3] || ".";
 
   await search.fill("demo_guest");
   await submit();
-  await page.getByRole("button", { name: "Guest Channel (demo)" }).waitFor();
+  await page.getByRole("button", { name: "Guest Channel (demo)", exact: true }).waitFor();
   assert.equal(await page.locator(".chip").count(), 5, "the searched streamer joined the list");
   await page.waitForSelector(".card:not(.card--skeleton)");
   assert.ok((await page.locator(".card").count()) > 0, "their clips loaded");
@@ -147,10 +147,27 @@ const shots = process.argv[3] || ".";
   await page.waitForFunction(() => document.querySelector(".field-error") === null);
   assert.equal(await page.locator(".chip").count(), 5, "no duplicate chip");
 
-  for (const name of ["nobody_aaa", "nobody_bbb", "nobody_ccc"]) {   // 5 new lookups are allowed per visitor per window
+  // Only the visitor's own streamer has a remove button. Pinned ones never do.
+  assert.equal(await page.locator(".chip-x").count(), 1, "one remove button, on the streamer this visitor added");
+  await page.getByRole("button", { name: "Stop tracking Guest Channel (demo)" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".chip").length === 4);
+  assert.equal(await page.locator(".chip-x").count(), 0, "pinned streamers cannot be removed");
+  await search.fill("demo_guest");                                   // adding it back costs a fresh lookup
+  await submit();
+  await page.getByRole("button", { name: "Guest Channel (demo)", exact: true }).waitFor();
+  assert.equal(await page.locator(".chip").count(), 5);
+
+  // Most Twitch accounts have no recent clips. That is said plainly and does not take a slot.
+  await search.fill("demo_quiet");
+  await submit();
+  await page.waitForFunction(() => /no clips from the last 7 days/i.test(document.querySelector(".field-error")?.textContent || ""));
+  assert.equal(await page.locator(".chip").count(), 5, "a clipless account does not become a chip");
+
+  for (const name of ["nobody_aaa"]) {                               // 5 new lookups are allowed per visitor per window
     await search.fill(name);
     await submit();
-    await page.waitForFunction((n) => /No Twitch channel/.test(document.querySelector(".field-error")?.textContent || ""), name);
+    await page.waitForFunction(() => /No Twitch channel/.test(document.querySelector(".field-error")?.textContent || ""));
+    await search.fill("");
   }
   await search.fill("nobody_ddd");
   await submit();
@@ -170,10 +187,10 @@ const shots = process.argv[3] || ".";
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "no horizontal scroll on mobile");
   await mobile.screenshot({ path: path.join(shots, "ui-mobile.png") });
 
-  assert.deepEqual(deleteStatuses, [204], "the one remove returned 204");
+  assert.deepEqual(deleteStatuses, [204, 204], "removing a saved clip and removing an own streamer both returned 204");
   assert.deepEqual(failedResponses, [
     "POST /api/streamers 404", "POST /api/streamers 400",
-    "POST /api/streamers 404", "POST /api/streamers 404", "POST /api/streamers 404", "POST /api/streamers 429",
+    "POST /api/streamers 404", "POST /api/streamers 404", "POST /api/streamers 429",
   ], "only the deliberate bad inputs and the rate limit fail");
   await browser.close();
   if (problems.length) {

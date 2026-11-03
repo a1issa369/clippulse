@@ -54,6 +54,11 @@ export default function App() {
     setView(tracked);
   }, [streamerState]);
 
+  const handleRemove = useCallback(async (login) => {
+    await streamerState.remove(login);
+    setView((current) => (current === login ? "rising" : current));
+  }, [streamerState]);
+
   const closeShotlist = useCallback(() => {
     setShotlistOpen(false);
     openerRef.current?.focus();
@@ -116,8 +121,8 @@ export default function App() {
           </section>
         ) : (
           <>
-            <StreamerBar streamers={streamerState.streamers} view={view} onView={setView} onTrack={handleTrack} />
-            <p className="hint">Search any Twitch streamer. Ones you add are tracked while people keep looking at them and dropped after 2 days without a visit.</p>
+            <StreamerBar streamers={streamerState.streamers} view={view} onView={setView} onTrack={handleTrack} onRemove={handleRemove} />
+            <p className="hint">Search any Twitch streamer. You can have up to 3 of your own at a time, and remove them with the × on their chip. They are dropped after 2 days without a visit.</p>
             <div className="controls">
               {view === "rising" ? (
                 <Segmented label="Time window" options={RISING_WINDOWS} value={hours} onChange={setHours} />

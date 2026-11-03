@@ -76,8 +76,8 @@ For frontend work, run `npm run watch` in `frontend/` next to the dev server.
 ## Tests
 
 ```bash
-cd backend && python3 -m pytest -q     # 249 tests, standard library + pytest only
-cd frontend && npm test                # 20 tests with Node's built-in runner
+cd backend && python3 -m pytest -q     # 317 tests, standard library + pytest only
+cd frontend && npm test                # 21 tests with Node's built-in runner
 python3 scripts/check_template.py template.yaml
 node scripts/e2e_check.js              # drives the real UI in Chromium against the demo server
 ```
@@ -144,7 +144,12 @@ Anyone can search any Twitch streamer, and the design keeps one visitor (or a sc
 | Visitor streamers | Tracked for 48 hours after anyone last looked at them. Looking extends the stay, rewritten at most once an hour. |
 | Shared pool | At most `MaxStreamers` (default 10) visitor streamers at once. When full, only one nobody has looked at for 6 hours can be replaced; otherwise the search is refused with a clear message. A search for a channel that does not exist never evicts anyone. |
 | New lookups | Only a streamer ClipPulse is not already tracking costs anything. Each visitor (a hash of their IP, never stored raw) gets 5 per 10 minutes and everyone together gets 30 per hour, counted with an atomic conditional write in DynamoDB. Misspelled and made-up names count too. Rate-limited replies are HTTP 429 with a `Retry-After` header. |
+| Per-visitor cap | One visitor can hold at most 3 streamers of their own at a time (`MAX_PER_CLIENT`). A fourth is refused until they remove one or one expires. Streamers someone else already added cost nothing and do not count. |
+| Removing | A visitor can stop tracking a streamer they added with the × on its chip (`DELETE /api/streamers/{login}`). Pinned streamers and other visitors' streamers cannot be removed, which stops one person from clearing everyone's list. Removals are limited to 10 per 10 minutes. |
+| Search limit | Every search, even for a streamer already tracked, counts toward 30 per 10 minutes per visitor, so the API cannot be hammered from one address. |
+| Visitor identity | A visitor is a salted SHA-256 hash of their IP (the salt is the stack id), so raw addresses are never stored and the hash cannot be reversed from a list of IPs. People behind one shared network (a campus, say) share one allowance and one set of streamers. There are no accounts. |
 | Front door | API Gateway throttles to 5 requests per second sustained (burst 20). |
+| No clips, no slot | Most Twitch accounts have no recent clips. Searching one says so plainly and does not take a slot or push anyone out; the hourly run also drops visitor streamers whose clips have all aged out. |
 | Expiry | Checked on every read through an `expires_at` field. DynamoDB's TTL only tidies up afterwards, because it can lag by up to 48 hours. |
 
 Hourly work is bounded by the pool: the pinned streamers plus at most `MaxStreamers` temporary ones. A new streamer's first appearance shows average views per hour; recent velocity, trend badges and the growth chart arrive after a couple of hourly snapshots.
@@ -174,7 +179,7 @@ Hourly work is bounded by the pool: the pinned streamers plus at most `MaxStream
 ```
 template.yaml                 SAM template: everything in AWS
 backend/src/clippulse/        scoring, twitch client, store, service, api, static site, poller
-backend/tests/                249 tests plus fakes
+backend/tests/                317 tests plus fakes
 backend/dev_server.py         local demo with fake channels
 frontend/src/                 React app (components, hooks, API client, pure helpers)
 frontend/test/                logic tests

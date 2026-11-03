@@ -34,6 +34,7 @@ DEMO_CHANNELS = {
     "demo_chessnight": "Chess Night (demo)",
     "demo_guest": "Guest Channel (demo)",     # not pinned: a visitor can search for it to see temporary tracking
 }
+DEMO_QUIET = {"demo_quiet": "Quiet Channel (demo)"}   # a real-looking account that has no clips
 DEMO_PINNED = ("demo_sketchlab", "demo_speedruns", "demo_chessnight")
 TITLES = [
     "Chat decides the ending", "That was NOT supposed to happen", "Perfect timing on the cut",
@@ -98,6 +99,8 @@ class DemoTwitch:
                 clip["_ticks"] = clip.get("_ticks", 0) + 1
 
     def get_user(self, login):
+        if login in DEMO_QUIET:
+            return {"login": login, "broadcaster_id": "9000", "display_name": DEMO_QUIET[login], "profile_image_url": ""}
         if login not in DEMO_CHANNELS:
             return None
         n = list(DEMO_CHANNELS).index(login)
@@ -159,7 +162,7 @@ def make_handler(app: App):
             length = int(self.headers.get("content-length") or 0)
             event = {"rawPath": parsed.path, "queryStringParameters": query or None,
                      "headers": {k.lower(): v for k, v in self.headers.items()},
-                     "requestContext": {"http": {"method": self.command, "path": parsed.path}},
+                     "requestContext": {"http": {"method": self.command, "path": parsed.path, "sourceIp": self.client_address[0]}},
                      "body": self.rfile.read(length).decode() if length else None}
             response = app.handle(event)
             body = response.get("body") or ""

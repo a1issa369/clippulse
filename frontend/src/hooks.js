@@ -63,7 +63,13 @@ export function useStreamers() {
     return result.streamer.login;
   }, [refresh]);
 
-  return { streamers, status, error, track };
+  /** Stops tracking a streamer this visitor added. Throws an ApiError with a message fit to show. */
+  const remove = useCallback(async (login) => {
+    await api.removeStreamer(login);
+    await refresh();
+  }, [refresh]);
+
+  return { streamers, status, error, track, remove };
 }
 
 export function useBoard(boardId) {

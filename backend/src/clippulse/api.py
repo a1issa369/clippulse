@@ -7,7 +7,6 @@ Either way the browser talks to a single origin, so no CORS is needed.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import re
@@ -43,6 +42,7 @@ class App:
         self._routes: List[Tuple[str, "re.Pattern[str]", Callable[..., Response]]] = []
         self._add("GET", r"/api/health", self._health)
         self._add("GET", r"/api/streamers", self._list_streamers)
+        self._add("DELETE", r"/api/streamers/(?P<login>[^/]+)", self._remove_streamer)
         self._add("POST", r"/api/streamers", self._track_streamer)
         self._add("GET", r"/api/streamers/(?P<login>[^/]+)/clips", self._streamer_clips)
         self._add("GET", r"/api/rising", self._rising)
@@ -98,12 +98,21 @@ class App:
         return json_response(200, {"ok": True})
 
     def _list_streamers(self, event: Event) -> Response:
-        return json_response(200, {"streamers": self.service.list_streamers()})
+        return json_response(200, {"streamers": self.service.list_streamers(self._client(event))})
 
     def _track_streamer(self, event: Event) -> Response:
         body = _json_body(event)
-        result = self.service.track_streamer(body.get("login"), client_id=_client_id(event))
+        result = self.service.track_streamer(body.get("login"), client_id=self._client(event))
         return json_response(201 if result["created"] else 200, result)
+
+    def _remove_streamer(self, event: Event, login: str) -> Response:
+        self.service.remove_streamer(login, self._client(event))
+        return json_response(204)
+
+    def _client(self, event: Event) -> Optional[str]:
+        """The caller's anonymous visitor id (salted IP hash), or None when API Gateway did not say."""
+        ip = (event.get("requestContext", {}).get("http", {}) or {}).get("sourceIp")
+        return self.service.client_id(ip)
 
     def _streamer_clips(self, event: Event, login: str) -> Response:
         q = _query(event)
@@ -131,12 +140,6 @@ class App:
     def _remove_item(self, event: Event, board: str, clip: str) -> Response:
         self.service.remove_item(board, clip)
         return json_response(204)
-
-
-def _client_id(event: Event) -> str:
-    """A stable, anonymous id for rate limiting: a hash of the caller's IP, so no raw address is stored."""
-    ip = (event.get("requestContext", {}).get("http", {}) or {}).get("sourceIp") or "unknown"
-    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:20]
 
 
 def _query(event: Event) -> Dict[str, str]:

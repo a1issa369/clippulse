@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-PSEUDO = {"AWS::Region", "AWS::AccountId", "AWS::StackName", "AWS::Partition", "AWS::NoValue", "AWS::URLSuffix"}
+PSEUDO = {"AWS::Region", "AWS::AccountId", "AWS::StackName", "AWS::StackId", "AWS::Partition", "AWS::NoValue", "AWS::URLSuffix"}
 
 
 class Tagged:
