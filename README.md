@@ -44,7 +44,7 @@ Twitch returns clips most-viewed first, and the poller reads one page. To make s
                              SSM Parameter Store: Twitch credentials
 ```
 
-Optional: set `EnableCloudFront=true` to put CloudFront + a private S3 bucket in front for the site (needs a CloudFront-verified AWS account).
+Optional: give the stack a Discord webhook to get surge alerts through SQS and Step Functions (see below). Optional: set `EnableCloudFront=true` to put CloudFront + a private S3 bucket in front for the site (needs a CloudFront-verified AWS account).
 
 - **Backend:** Python 3.13 on Lambda (arm64) with **zero third-party dependencies**: `urllib` for Twitch, `boto3` from the runtime. Nothing to package, nothing to patch.
 - **Data:** one DynamoDB table in on-demand mode. Clips expire through TTL.
@@ -76,7 +76,7 @@ For frontend work, run `npm run watch` in `frontend/` next to the dev server.
 ## Tests
 
 ```bash
-cd backend && python3 -m pytest -q     # 317 tests, standard library + pytest only
+cd backend && python3 -m pytest -q     # 359 tests, standard library + pytest only
 cd frontend && npm test                # 21 tests with Node's built-in runner
 python3 scripts/check_template.py template.yaml
 node scripts/e2e_check.js              # drives the real UI in Chromium against the demo server
@@ -156,6 +156,47 @@ Hourly work is bounded by the pool: the pinned streamers plus at most `MaxStream
 
 **What this does and does not guarantee.** It bounds the damage; it cannot make it zero, because AWS bills every request. A sustained flood is capped by the throttle: 5 requests per second for a month is roughly 13 million requests, on the order of $13 at HTTP API list pricing (check current rates) plus pennies of Lambda. The budget alert emails you, and `sam delete --stack-name clippulse` removes everything.
 
+## Surge alerts to Discord (optional)
+
+When a clip on one of the owner's pinned streamers starts taking off, ClipPulse posts it to a Discord channel. It is off until you give the stack a webhook, and nothing for it is created while it is off.
+
+```
+hourly poller --> SQS queue --> starter Lambda --> Step Functions --> notifier Lambda --> Discord
+                     |                                   |
+                dead letter queue               retries with backoff,
+                                                visible failed runs
+```
+
+- **What counts as a surge.** The clip's trend is "up" (recent views per hour at least 1.5 times its lifetime average) and it is gaining at least 30 views per hour, on a pinned streamer, less than 48 hours old. Visitor-added streamers never alert, so nobody else can make the site post anything.
+- **Once per clip.** An atomic DynamoDB counter keyed on the clip id means each clip is announced one time, and the Step Functions execution name is derived from the clip id, so a redelivered queue message cannot post it twice.
+- **Bounded.** At most 5 alerts per hourly run and 20 per day, fastest clips first.
+- **Why four moving parts.** The poller only decides and enqueues, so a slow Discord can never delay the hourly snapshot. SQS holds the work and parks failures in a dead letter queue. Step Functions owns the retry policy: Discord being busy or down (429 or 5xx) is retried with exponential backoff, a rejected webhook is not retried, and giving up leaves a failed execution you can read in the console. The notifier is the only code that touches Discord.
+- **Safe messages.** Clip titles are written by strangers, so every message sets `allowed_mentions` to none (a title cannot ping anyone) and only Twitch links are made clickable.
+- **The webhook is a secret.** It is stored in SSM Parameter Store as a SecureString and read by the notifier at runtime. It never appears in the template, the repo, or CloudFormation parameters, only its parameter name does.
+- **Cost.** SQS, Step Functions (standard) and the extra Lambdas stay inside the free tiers at this volume: at most 20 alerts a day is roughly 60 state transitions a day against a free allowance of 4,000 a month.
+
+Turn it on (the webhook is typed locally and never pasted into chat or git):
+
+```bash
+# 1. In Discord: channel settings > Integrations > Webhooks > New Webhook > Copy Webhook URL
+read -s -p "Paste the webhook URL (nothing will show): " HOOK; echo
+aws ssm put-parameter --region us-east-2 --name /clippulse/discord_webhook --type SecureString --value "$HOOK"
+unset HOOK
+
+# 2. Redeploy and answer the DiscordWebhookParam prompt with /clippulse/discord_webhook (Enter keeps the other answers)
+scripts/deploy.sh --guided
+```
+
+Try it without waiting for a real surge by running one alert through the state machine:
+
+```bash
+ARN=$(aws cloudformation describe-stacks --region us-east-2 --stack-name clippulse --query "Stacks[0].Outputs[?OutputKey=='SurgeStateMachineArn'].OutputValue" --output text)
+aws stepfunctions start-execution --region us-east-2 --state-machine-arn "$ARN" \
+  --input '{"clip_id":"manual-test","title":"Test alert","url":"https://clips.twitch.tv/test","streamer":"ClipPulse","velocity":120,"views":3100,"age_hours":3}'
+```
+
+The message should appear in Discord within seconds, and the execution shows up in the Step Functions console. To turn alerts off, redeploy with `DiscordWebhookParam` empty and the queue, state machine and extra Lambdas are removed.
+
 ## Design decisions and trade-offs
 
 - **History as a list on the clip item, not one item per snapshot.** One `Query` returns a streamer's clips with their trends, and each poll costs one read and one write per clip. The cost is a read-modify-write per clip, which is safe because a single scheduled poller writes them.
@@ -172,6 +213,8 @@ Hourly work is bounded by the pool: the pinned streamers plus at most `MaxStream
 - **Removal is limited to your own streamers.** Letting anyone remove any streamer would let one person wipe everyone's list, so pinned streamers and other visitors' streamers are protected.
 - **Expiry is checked on read, and TTL only cleans up.** DynamoDB's TTL can lag by up to 48 hours, so correctness comes from comparing `expires_at` on every read instead of trusting the deletion.
 - **A 2 hour prior in average velocity.** `views / (age + 2h)` keeps a three-minute-old clip with 4 views from outranking a day-old clip with 900, at the cost of slightly understating very fresh clips that really are taking off. The recent-velocity signal from the hourly snapshots corrects for that once it exists.
+- **Alerts go through a queue and a state machine instead of one Lambda call.** Calling Discord straight from the poller is a few lines of code, but then every Discord hiccup would stall or fail the hourly snapshot, and retries would have to be hand-written. SQS plus Step Functions cost more moving parts and more template, in exchange for isolation, backoff, a dead letter queue and a visible history of every delivery. For one webhook this is more machinery than the job strictly needs, and I chose it on purpose to learn those services; a single Lambda with a retry loop would also work.
+- **Deduplication uses the rate-limit counter instead of a new table or field.** One atomic conditional write per clip says "announced already", with no extra schema, at the cost of the dedupe window being a fixed number of days. If queueing fails after the counter is spent, that clip's alert is lost rather than duplicated, which is the right way to fail for a notification.
 - **CSV export neutralises formulas.** Clip titles are written by strangers, so cells starting with `=`, `+`, `-` or `@` are prefixed with an apostrophe before they reach a spreadsheet.
 
 ## Difficulties along the way
@@ -185,6 +228,8 @@ What went wrong or surprised me while building this, and what I changed because 
 - **Ownership without accounts.** Letting people remove streamers needed some notion of who added what. I used a salted hash of the IP, never sent the stored id to the browser (only a yes/no `mine` flag), and limited removal to your own streamers so one person cannot clear everyone else's list. The cost is the shared-address caveat in the limits below.
 - **A flaky browser test.** The end-to-end check sometimes failed because a second search started while the first was still running and the button was disabled. The fix was to wait for the response and for the button to come back before the next action, so the test follows the user's real sequence.
 - **Confusing duplicate text on cards.** An early card read "360 views/hr (360 views/hr gained...)" because two code paths each explained the same number. I pulled the wording into one helper and added a test.
+- **Discord rejects the default Python user agent.** A plain `urllib` request to a webhook is refused by Discord's edge, so the notifier sends its own `User-Agent`. It is the kind of failure no unit test with a fake HTTP function can show, which is why the README walks through a real test execution after deploying.
+- **Telling a retryable failure from a hopeless one.** Retrying a rejected webhook five times is wasted work and noise, while giving up on a 429 loses the alert. The notifier raises two differently named exceptions, `DiscordRetryable` and `DiscordRejected`, and the state machine retries only the first. Step Functions matches on the exception class name, so a test ties the template to the code and fails if either is renamed.
 - **Tooling, not just code.** The first push to GitHub failed with an HTTP 400 until I switched git to HTTP/1.1 with a larger post buffer, and a later push was rejected because the remote had moved on. Small, but it is part of shipping.
 
 ## Known limits
@@ -198,8 +243,8 @@ What went wrong or surprised me while building this, and what I changed because 
 
 ```
 template.yaml                 SAM template: everything in AWS
-backend/src/clippulse/        scoring, twitch client, store, service, api, static site, poller
-backend/tests/                317 tests plus fakes
+backend/src/clippulse/        scoring, twitch client, store, service, api, static site, poller, surge alerts
+backend/tests/                359 tests plus fakes
 backend/dev_server.py         local demo with fake channels
 frontend/src/                 React app (components, hooks, API client, pure helpers)
 frontend/test/                logic tests

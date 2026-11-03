@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .alerts import SqsPublisher
 from .config import load_settings
 from .service import ClipService
 from .store import DynamoStore
@@ -35,5 +36,7 @@ def build_service() -> ClipService:
                 raise TwitchError("Twitch credentials are not configured") from err
         return cache["client"]
 
-    _service = ClipService(DynamoStore(table), twitch, settings)
+    # Surge alerts are off unless the template was given a Discord webhook (which is what sets the queue url).
+    publisher = SqsPublisher(settings.surge_queue_url) if settings.surge_queue_url else None
+    _service = ClipService(DynamoStore(table), twitch, settings, alerts=publisher)
     return _service

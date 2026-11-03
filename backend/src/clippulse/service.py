@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from .alerts import make_alert
 from .config import Settings
 from .scoring import clip_metrics, format_ts, parse_ts, rank
 from .store import Store, ttl_from_now
@@ -73,8 +74,9 @@ class UpstreamBusy(ServiceError):
 
 class ClipService:
     def __init__(self, store: Store, twitch_provider: Callable[[], Any], settings: Settings,
-                 clock: Optional[Callable[[], datetime]] = None):
+                 clock: Optional[Callable[[], datetime]] = None, alerts: Any = None):
         self.store = store
+        self.alerts = alerts          # anything with publish(alert); None means surge alerts are off
         self._twitch_provider = twitch_provider
         self.settings = settings
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -146,7 +148,45 @@ class ClipService:
         emptied = self.prune_empty()
         summary = self.poll_all()
         summary["errors"] = pinned.pop("errors") + summary["errors"]
-        return {**summary, "pinned": pinned, "pruned": pruned, "emptied": emptied}
+        result = {**summary, "pinned": pinned, "pruned": pruned, "emptied": emptied}
+        if self.alerts is not None:
+            result["alerts"] = self.announce_surges()
+        return result
+
+    def announce_surges(self) -> Dict[str, Any]:
+        """Queue an alert for each pinned-streamer clip that has just started taking off.
+
+        Only the owner's pinned streamers can alert, so visitors cannot make the site post anything.
+        Each clip is announced once (an atomic counter keyed on the clip id), no more than `surge_per_run` per
+        run and `surge_per_day` per day. A failure to queue never stops the hourly snapshot."""
+        cfg, now = self.settings, self._now()
+        since = format_ts(now - timedelta(hours=cfg.surge_max_age_hours))
+        candidates = []
+        for streamer in self._active_streamers():
+            if not self._is_pinned(streamer):
+                continue
+            for clip in self.store.query_clips(streamer["broadcaster_id"], since):
+                public = _enrich(clip, streamer, now)
+                recent = public["recent_velocity"]
+                if public["trend"] == "up" and recent is not None and recent >= cfg.surge_min_velocity:
+                    candidates.append(public)
+        candidates.sort(key=lambda c: (-c["recent_velocity"], c["id"]))
+        result: Dict[str, Any] = {"sent": 0, "skipped": 0, "errors": []}
+        for clip in candidates:
+            if result["sent"] >= cfg.surge_per_run:
+                break
+            if not self.store.take_token(f"surge-{clip['id']}", cfg.surge_dedupe_days * 86400, 1, now.timestamp()):
+                result["skipped"] += 1               # announced before
+                continue
+            if not self.store.take_token("surge-day", 86400, cfg.surge_per_day, now.timestamp()):
+                result["errors"].append("daily alert limit reached")
+                break
+            try:
+                self.alerts.publish(make_alert(clip))
+                result["sent"] += 1
+            except Exception as err:                 # queue trouble must not break polling
+                result["errors"].append(f"{clip['id']}: {err}")
+        return result
 
     # -- who is tracked ---------------------------------------------------
     # Two kinds of streamer share one table:

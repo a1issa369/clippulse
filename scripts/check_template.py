@@ -53,8 +53,11 @@ def main(path: str) -> int:
     conditions = set(doc.get("Conditions", {}))
     errors = []
 
+    # SAM turns each AWS::Serverless::Function into several resources, and the execution role is named <Function>Role.
+    sam_generated = {f"{n}Role" for n, r in doc["Resources"].items() if r.get("Type") == "AWS::Serverless::Function"}
+
     def known(name):
-        return name in params or name in resources or name in PSEUDO
+        return name in params or name in resources or name in PSEUDO or name in sam_generated
 
     for tag in walk(doc):
         if tag.tag == "Ref":

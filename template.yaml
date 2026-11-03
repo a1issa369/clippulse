@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: ClipPulse - finds rising Twitch clips for video editors. Lambda + HTTP API + DynamoDB + EventBridge, with an optional S3 + CloudFront front door.
+Description: ClipPulse - finds rising Twitch clips for video editors. Lambda + HTTP API + DynamoDB + EventBridge, with optional Discord surge alerts (SQS + Step Functions) and an optional S3 + CloudFront front door.
 
 Parameters:
   TwitchClientIdParam:
@@ -33,6 +33,13 @@ Parameters:
     Type: Number
     Default: 5
     MinValue: 1
+  DiscordWebhookParam:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. Name of an SSM SecureString parameter holding a Discord webhook URL (for example /clippulse/discord_webhook).
+      When set, clips that start surging on pinned streamers are posted to that channel through SQS and Step Functions.
+      Leave empty to keep surge alerts (and everything they need) out of the stack.
   EnableCloudFront:
     Type: String
     Default: "false"
@@ -44,6 +51,7 @@ Parameters:
 Conditions:
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
   UseCloudFront: !Equals [!Ref EnableCloudFront, "true"]
+  HasDiscordWebhook: !Not [!Equals [!Ref DiscordWebhookParam, ""]]
 
 Globals:
   Function:
@@ -141,11 +149,135 @@ Resources:
               Resource:
                 - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TwitchClientIdParam}
                 - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TwitchClientSecretParam}
+      Environment:
+        Variables:
+          SURGE_QUEUE_URL: !If [HasDiscordWebhook, !Ref SurgeQueue, ""]
       Events:
         Snapshot:
           Type: Schedule
           Properties:
             Schedule: !Ref PollSchedule
+
+  # ---------------------------------------------------------------- surge alerts (only when DiscordWebhookParam is set)
+  # poller -> SQS -> starter Lambda -> Step Functions -> notifier Lambda -> Discord
+  SurgeDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasDiscordWebhook
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  SurgeQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasDiscordWebhook
+    Properties:
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SurgeDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  PollerSendSurgePolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasDiscordWebhook
+    Properties:
+      PolicyName: send-surge-alerts
+      Roles: [!Ref PollerFunctionRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !GetAtt SurgeQueue.Arn
+
+  SurgeNotifierLogs:
+    Type: AWS::Logs::LogGroup
+    Condition: HasDiscordWebhook
+    Properties:
+      RetentionInDays: 14
+
+  SurgeNotifierFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasDiscordWebhook
+    Properties:
+      CodeUri: backend/src/
+      Handler: clippulse.alerts.notify_handler
+      Timeout: 20
+      LoggingConfig:
+        LogGroup: !Ref SurgeNotifierLogs
+      Environment:
+        Variables:
+          DISCORD_WEBHOOK_PARAM: !Ref DiscordWebhookParam
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DiscordWebhookParam}
+
+  SurgeStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Condition: HasDiscordWebhook
+    Properties:
+      Type: STANDARD
+      Definition:
+        Comment: Post one surge alert to Discord. Busy or down is retried with backoff, a rejected webhook is not.
+        StartAt: PostToDiscord
+        States:
+          PostToDiscord:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: !GetAtt SurgeNotifierFunction.Arn
+              Payload.$: $
+            ResultPath: null
+            Retry:
+              - ErrorEquals: [DiscordRetryable, Lambda.ServiceException, Lambda.AWSLambdaException, Lambda.SdkClientException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 15
+                BackoffRate: 2
+                MaxAttempts: 5
+            Catch:
+              - ErrorEquals: [States.ALL]
+                Next: GiveUp
+            End: true
+          GiveUp:
+            Type: Fail
+            Error: AlertNotDelivered
+            Cause: Discord rejected the alert or stayed unavailable through every retry. See this execution's history.
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SurgeNotifierFunction
+
+  SurgeStarterLogs:
+    Type: AWS::Logs::LogGroup
+    Condition: HasDiscordWebhook
+    Properties:
+      RetentionInDays: 14
+
+  SurgeStarterFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasDiscordWebhook
+    Properties:
+      CodeUri: backend/src/
+      Handler: clippulse.alerts.start_handler
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref SurgeStarterLogs
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref SurgeStateMachine
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Ref SurgeStateMachine
+      Events:
+        FromQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SurgeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes: [ReportBatchItemFailures]
 
   # ---------------------------------------------------------------- website
   SiteBucket:
@@ -291,3 +423,11 @@ Outputs:
     Value: !Ref PollerFunction
   ApiFunctionName:
     Value: !Ref ApiFunction
+  SurgeStateMachineArn:
+    Condition: HasDiscordWebhook
+    Description: Open this in the Step Functions console to watch alerts being delivered
+    Value: !Ref SurgeStateMachine
+  SurgeDeadLetterQueueUrl:
+    Condition: HasDiscordWebhook
+    Description: Alerts that could not even be handed to Step Functions end up here
+    Value: !Ref SurgeDeadLetterQueue
