@@ -131,3 +131,36 @@ def test_decimal_conversion_helpers():
 def test_fake_table_rejects_floats_like_boto3_does():
     with pytest.raises(TypeError):
         FakeTable().put_item(Item={"pk": "p", "sk": "s", "x": 1.5})
+
+
+# --- streamer deletion and rate-limit counters ----------------------------------
+
+def test_delete_streamer(store):
+    store.put_streamer({"login": "amy", "broadcaster_id": "1", "display_name": "Amy"})
+    assert store.delete_streamer("amy") is True
+    assert store.get_streamer("amy") is None and store.list_streamers() == []
+    assert store.delete_streamer("amy") is False
+
+
+def test_take_token_counts_up_to_the_limit_then_refuses(store):
+    results = [store.take_token("signups", 600, 3, now=1_000_000.0) for _ in range(5)]
+    assert results == [True, True, True, False, False]
+
+
+def test_take_token_buckets_are_independent(store):
+    assert all(store.take_token("a", 60, 2, 5000.0) for _ in range(2))
+    assert store.take_token("a", 60, 2, 5000.0) is False
+    assert store.take_token("b", 60, 2, 5000.0) is True          # another bucket is untouched
+
+
+def test_take_token_starts_fresh_in_the_next_window(store):
+    window = 600
+    start = 10 * window
+    assert [store.take_token("x", window, 1, start + 5) for _ in range(2)] == [True, False]
+    assert store.take_token("x", window, 1, start + window - 1) is False   # same window, even at its last second
+    assert store.take_token("x", window, 1, start + window) is True        # next window
+
+
+def test_counters_do_not_show_up_as_streamers(store):
+    store.take_token("lookup-global", 3600, 5, 1.0)
+    assert store.list_streamers() == []

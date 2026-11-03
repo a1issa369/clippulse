@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { resolveBoardId } from "./board.js";
 import {
@@ -73,6 +73,14 @@ export default function App() {
   // Look the clip up in the current feed each render so the saved state and numbers stay live.
   const playingClip = playing ? feed.clips.find((c) => c.id === playing) ?? null : null;
 
+  // A streamer other visitors added can age out. If someone opens one that just expired, add it back for them.
+  const retried = useRef(new Set());
+  useEffect(() => {
+    if (feed.status !== "error" || feed.errorStatus !== 404 || view === "rising" || retried.current.has(view)) return;
+    retried.current.add(view);
+    handleTrack(view).then(() => feed.reload()).catch(() => { /* the error banner already explains it */ });
+  }, [feed.status, feed.errorStatus, view]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const noStreamers = streamerState.status === "ready" && streamerState.streamers.length === 0;
   const asOf = formatAsOf(feed.asOf);
 
@@ -102,13 +110,14 @@ export default function App() {
 
         {noStreamers ? (
           <section className="empty">
-            <h2>Start by tracking a streamer</h2>
-            <p>Enter a Twitch username. ClipPulse pulls their recent clips right away, then re-checks view counts every hour to see which ones are rising.</p>
+            <h2>Search for a streamer</h2>
+            <p>Enter any Twitch username. ClipPulse pulls their recent clips right away, then re-checks view counts every hour to see which ones are rising.</p>
             <TrackForm onTrack={handleTrack} prominent />
           </section>
         ) : (
           <>
             <StreamerBar streamers={streamerState.streamers} view={view} onView={setView} onTrack={handleTrack} />
+            <p className="hint">Search any Twitch streamer. Ones you add are tracked while people keep looking at them and dropped after 2 days without a visit.</p>
             <div className="controls">
               {view === "rising" ? (
                 <Segmented label="Time window" options={RISING_WINDOWS} value={hours} onChange={setHours} />

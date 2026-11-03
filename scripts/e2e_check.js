@@ -115,14 +115,47 @@ const shots = process.argv[3] || ".";
   await page.locator(".btn--saved").first().click();
   await page.waitForFunction(() => document.querySelector(".btn--shotlist .count").textContent === "1");
 
-  // Tracking: unknown channel shows an error, known demo channel is accepted
-  await page.getByPlaceholder("Track a streamer").fill("nobody_here");
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  // Searching: anyone can look up any streamer. Bad input and unknown channels explain themselves,
+  // a real channel is added as a chip and its clips load, and a visitor who keeps looking up new names is rate limited.
+  const search = page.getByPlaceholder("Search any streamer");
+  // Click Search, then wait for the request to finish and the button to come back, so one search never overlaps the next.
+  const submit = async () => {
+    await Promise.all([
+      page.waitForResponse((r) => r.url().includes("/api/streamers") && r.request().method() === "POST"),
+      page.getByRole("button", { name: "Search", exact: true }).click(),
+    ]);
+    await page.waitForFunction(() => !/Searching/.test(document.querySelector(".track button")?.textContent || ""));
+  };
+  assert.ok(await search.isVisible(), "the search box is public");
+  await search.fill("nobody_here");
+  await submit();
   await page.waitForSelector(".field-error");
-  assert.match(await page.locator(".field-error").innerText(), /No Twitch channel|not|Twitch/i);
-  await page.getByPlaceholder("Track a streamer").fill("bad name!");
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  assert.match(await page.locator(".field-error").innerText(), /No Twitch channel/i);
+  await search.fill("bad name!");
+  await submit();
   await page.waitForFunction(() => /username/i.test(document.querySelector(".field-error")?.textContent || ""));
+
+  await search.fill("demo_guest");
+  await submit();
+  await page.getByRole("button", { name: "Guest Channel (demo)" }).waitFor();
+  assert.equal(await page.locator(".chip").count(), 5, "the searched streamer joined the list");
+  await page.waitForSelector(".card:not(.card--skeleton)");
+  assert.ok((await page.locator(".card").count()) > 0, "their clips loaded");
+  assert.equal(await page.getByPlaceholder("Search any streamer").inputValue(), "", "the box clears after a search");
+  await search.fill("demo_guest");                                   // searching again just finds the existing one
+  await submit();
+  await page.waitForFunction(() => document.querySelector(".field-error") === null);
+  assert.equal(await page.locator(".chip").count(), 5, "no duplicate chip");
+
+  for (const name of ["nobody_aaa", "nobody_bbb", "nobody_ccc"]) {   // 5 new lookups are allowed per visitor per window
+    await search.fill(name);
+    await submit();
+    await page.waitForFunction((n) => /No Twitch channel/.test(document.querySelector(".field-error")?.textContent || ""), name);
+  }
+  await search.fill("nobody_ddd");
+  await submit();
+  await page.waitForFunction(() => /too quickly/i.test(document.querySelector(".field-error")?.textContent || ""));
+  assert.match(await page.locator(".field-error").innerText(), /Try again in \d+ (seconds|minutes)/);
 
   // Share link opens the same board in a fresh browser context
   const boardId = await page.evaluate(() => localStorage.getItem("clippulse.board"));
@@ -138,7 +171,10 @@ const shots = process.argv[3] || ".";
   await mobile.screenshot({ path: path.join(shots, "ui-mobile.png") });
 
   assert.deepEqual(deleteStatuses, [204], "the one remove returned 204");
-  assert.deepEqual(failedResponses, ["POST /api/streamers 404", "POST /api/streamers 400"], "only the two deliberate bad inputs fail");
+  assert.deepEqual(failedResponses, [
+    "POST /api/streamers 404", "POST /api/streamers 400",
+    "POST /api/streamers 404", "POST /api/streamers 404", "POST /api/streamers 404", "POST /api/streamers 429",
+  ], "only the deliberate bad inputs and the rate limit fail");
   await browser.close();
   if (problems.length) {
     console.error("PROBLEMS:\n" + [...new Set(problems)].join("\n"));

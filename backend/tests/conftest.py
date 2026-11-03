@@ -60,7 +60,8 @@ def twitch():
 
 @pytest.fixture
 def settings():
-    return Settings(max_streamers=3, max_board_items=3)
+    # Generous lookup limits so ordinary tests never trip them; the rate-limit tests set their own.
+    return Settings(max_temp_streamers=3, max_board_items=3, lookups_per_client=100, lookups_global=1000)
 
 
 @pytest.fixture

@@ -120,3 +120,48 @@ def test_unexpected_errors_return_500_without_leaking_details():
     r = call(App(broken), "GET", "/api/streamers")
     assert r["statusCode"] == 500 and "secret" not in r["body"]
     assert data(r)["error"]["code"] == "internal_error"
+
+
+# --- open tracking over HTTP ------------------------------------------------------------------------
+
+def test_the_streamer_list_shows_pinned_flags(live):
+    call(live, "POST", "/api/streamers", {"login": "amy"})
+    streamers = data(call(live, "GET", "/api/streamers"))["streamers"]
+    assert streamers[0]["pinned"] is False and "expires_at" not in streamers[0] and "ttl" not in streamers[0]
+
+
+def test_rate_limited_searches_get_429_with_retry_after(service, twitch):
+    from dataclasses import replace
+    from clippulse.service import ClipService
+    limited = ClipService(service.store, service._twitch_provider, replace(service.settings, lookups_per_client=1),
+                          clock=service._clock)
+    app = App(lambda: limited)
+    for name in ("amy", "bob"):
+        bid = twitch.add_streamer(name)
+        twitch.add_clip(bid, f"{name}-1", 10, ts(1))
+    assert call(app, "POST", "/api/streamers", {"login": "amy"})["statusCode"] == 201
+    r = call(app, "POST", "/api/streamers", {"login": "bob"})
+    assert r["statusCode"] == 429 and data(r)["error"]["code"] == "rate_limited"
+    assert 0 < int(r["headers"]["retry-after"]) <= 600
+
+
+def test_visitors_are_told_apart_by_a_hash_of_their_ip(service, twitch):
+    from dataclasses import replace
+    from clippulse.service import ClipService
+    limited = ClipService(service.store, service._twitch_provider, replace(service.settings, lookups_per_client=1),
+                          clock=service._clock)
+    app = App(lambda: limited)
+    for name in ("amy", "bob", "kim"):
+        bid = twitch.add_streamer(name)
+        twitch.add_clip(bid, f"{name}-1", 10, ts(1))
+
+    def post(login, ip):
+        event = {"rawPath": "/api/streamers", "body": json.dumps({"login": login}),
+                 "requestContext": {"http": {"method": "POST", "path": "/api/streamers", "sourceIp": ip}}}
+        return app.handle(event)["statusCode"]
+
+    assert post("amy", "203.0.113.7") == 201
+    assert post("bob", "203.0.113.7") == 429          # same address: limited
+    assert post("bob", "198.51.100.9") == 201         # different address: its own allowance
+    stored = [item for item in service.store._counters] if hasattr(service.store, "_counters") else []
+    assert all("203.0.113.7" not in str(key) for key in stored)   # the raw IP is never used as a key

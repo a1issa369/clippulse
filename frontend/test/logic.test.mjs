@@ -197,3 +197,11 @@ test("embedUrl builds Twitch's embed link and refuses anything odd", () => {
   assert.equal(embedUrl("", "example.com"), null);
   assert.equal(embedUrl(undefined, "example.com"), null);
 });
+
+test("a throttled response gets a friendly message, and the server's own message wins when there is one", async () => {
+  const plain = createApi(async () => ({ ok: false, status: 429, json: async () => { throw new Error("not json"); } }));
+  await assert.rejects(plain.listStreamers(), (err) => err.status === 429 && /busy right now/.test(err.message));
+  const own = createApi(async () => ({ ok: false, status: 429,
+    json: async () => ({ error: { code: "rate_limited", message: "Try again in 4 minutes." } }) }));
+  await assert.rejects(own.trackStreamer("amy"), (err) => err.code === "rate_limited" && err.message === "Try again in 4 minutes.");
+});

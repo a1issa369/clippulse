@@ -64,6 +64,14 @@ class FakeTwitch:
         return copy.deepcopy(rows[:max_items])
 
 
+class FakeConditionalCheckFailed(Exception):
+    """Shaped like botocore's ClientError, which is how DynamoStore recognises a refused conditional write."""
+
+    def __init__(self):
+        super().__init__("The conditional request failed")
+        self.response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+
+
 class FakeTable:
     """Supports exactly the key-condition shapes DynamoStore uses and fails loudly on others."""
 
@@ -105,6 +113,22 @@ class FakeTable:
     def delete_item(self, Key, ReturnValues=None):
         old = self.items.pop((Key["pk"], Key["sk"]), None)
         return {"Attributes": copy.deepcopy(old)} if (old and ReturnValues == "ALL_OLD") else {}
+
+    def update_item(self, Key, UpdateExpression, ConditionExpression, ExpressionAttributeNames,
+                    ExpressionAttributeValues):
+        """Only the counter update DynamoStore.take_token sends: it must match exactly, then behave like DynamoDB."""
+        from clippulse.store import TAKE_TOKEN_CONDITION, TAKE_TOKEN_UPDATE
+        assert UpdateExpression == TAKE_TOKEN_UPDATE and ConditionExpression == TAKE_TOKEN_CONDITION
+        assert ExpressionAttributeNames == {"#ttl": "ttl", "#hits": "hits"}
+        item = self.items.get((Key["pk"], Key["sk"]))
+        hits = item["hits"] if item else None
+        if hits is not None and not hits < ExpressionAttributeValues[":limit"]:
+            raise FakeConditionalCheckFailed()
+        stored = item or {"pk": Key["pk"], "sk": Key["sk"]}
+        stored["hits"] = (hits or Decimal(0)) + ExpressionAttributeValues[":one"]
+        stored["ttl"] = Decimal(ExpressionAttributeValues[":ttl"])
+        self.items[(Key["pk"], Key["sk"])] = stored
+        return {}
 
     def query(self, KeyConditionExpression, ExpressionAttributeValues, ScanIndexForward=True,
               ExclusiveStartKey=None):

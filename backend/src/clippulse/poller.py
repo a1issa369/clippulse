@@ -1,4 +1,4 @@
-"""Hourly EventBridge target: take a fresh view-count snapshot of every tracked streamer."""
+"""Hourly EventBridge target: apply the pinned list, drop expired streamers, snapshot everyone still tracked."""
 from __future__ import annotations
 
 import json
@@ -12,6 +12,6 @@ logger.setLevel(logging.INFO)
 
 
 def handler(event: Any = None, context: Any = None) -> dict:
-    summary = build_service().poll_all()
+    summary = build_service().run_hourly()
     logger.info(json.dumps({"poll": summary}))
     return summary

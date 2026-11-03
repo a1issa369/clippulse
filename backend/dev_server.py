@@ -32,7 +32,9 @@ DEMO_CHANNELS = {
     "demo_sketchlab": "SketchLab (demo)",
     "demo_speedruns": "Speedruns Daily (demo)",
     "demo_chessnight": "Chess Night (demo)",
+    "demo_guest": "Guest Channel (demo)",     # not pinned: a visitor can search for it to see temporary tracking
 }
+DEMO_PINNED = ("demo_sketchlab", "demo_speedruns", "demo_chessnight")
 TITLES = [
     "Chat decides the ending", "That was NOT supposed to happen", "Perfect timing on the cut",
     "The plot twist nobody saw", "One frame too early", "Clutch of the week",
@@ -120,13 +122,12 @@ class OffsetClock:
 def build_demo_service():
     clock = OffsetClock()
     twitch = DemoTwitch(clock)
-    service = ClipService(MemoryStore(), lambda: twitch, Settings(), clock=clock)
+    service = ClipService(MemoryStore(), lambda: twitch, Settings(pinned_streamers=DEMO_PINNED), clock=clock)
     # Pretend the poller has been running for six hours so trends have something to show.
     for hours_ago in range(6, -1, -1):
         clock.offset = -timedelta(hours=hours_ago)
         if hours_ago == 6:
-            for login in DEMO_CHANNELS:
-                service.track_streamer(login)
+            service.ensure_pinned()
         else:
             twitch.grow()
             service.poll_all()

@@ -26,7 +26,11 @@ export function createApi(fetchFn = (...args) => globalThis.fetch(...args), base
     let data = null;
     try { data = await response.json(); } catch { /* non-JSON error page */ }
     if (!response.ok) {
-      throw new ApiError(data?.error?.message ?? `Request failed (${response.status}).`, response.status, data?.error?.code);
+      // API Gateway's own throttle answers 429 with a plain body, so give that case a friendly message too.
+      const fallback = response.status === 429
+        ? "ClipPulse is busy right now. Try again in a moment."
+        : `Request failed (${response.status}).`;
+      throw new ApiError(data?.error?.message ?? fallback, response.status, data?.error?.code);
     }
     return data;
   }

@@ -11,6 +11,7 @@ Video editors and clip channels lose the window on a good moment: by the time a 
 
 - **Rising feed.** Clips from the streamers you track, ranked by views gained per hour, with a Surging / Steady / Cooling badge.
 - **Watch and chart.** Click a thumbnail to play the clip in the page (Twitch's official embed, loaded only after you click), with a growth chart of its views over time. Cards show a small version of the same chart.
+- **Search any streamer.** Type any Twitch username. Their clips load right away and they stay tracked while people keep looking, then drop off after 2 days of no visits. The site owner's own list is pinned and never drops.
 - **Per-streamer view.** Sort by momentum, total views or newest, over the last 24 hours, 3 days or 7 days.
 - **Shotlist.** Save clips, jot a note on how you would cut each one (the VOD timestamp is shown so you can find the moment in the full stream), and export everything as a CSV.
 - **No accounts.** A shotlist is identified by a random, unguessable id kept in your browser. Share the link to share the list.
@@ -68,15 +69,15 @@ cd frontend && npm install && npm run build && cd ..
 python3 backend/dev_server.py          # open http://localhost:8787
 ```
 
-This runs the real API code against an in-memory store and a **demo** Twitch with made-up channels. It pretends the poller has run for six hours so trends have something to show, and it ticks forward every 20 seconds so you can watch numbers move.
+This runs the real API code against an in-memory store and a **demo** Twitch with made-up channels. It pretends the poller has run for six hours so trends have something to show, and it ticks forward every 20 seconds so you can watch numbers move. Searching `demo_guest` shows how a visitor-added streamer appears.
 
 For frontend work, run `npm run watch` in `frontend/` next to the dev server.
 
 ## Tests
 
 ```bash
-cd backend && python3 -m pytest -q     # 183 tests, standard library + pytest only
-cd frontend && npm test                # 19 tests with Node's built-in runner
+cd backend && python3 -m pytest -q     # 249 tests, standard library + pytest only
+cd frontend && npm test                # 20 tests with Node's built-in runner
 python3 scripts/check_template.py template.yaml
 node scripts/e2e_check.js              # drives the real UI in Chromium against the demo server
 ```
@@ -133,6 +134,23 @@ sam delete --stack-name clippulse       # if CloudFront was enabled, empty the s
 
 Everything is pay-per-use. At the default limits (10 streamers, top 100 clips each, one poll per hour) the poller does on the order of a thousand DynamoDB writes an hour, which on-demand pricing turns into pennies to low single dollars a month, and Lambda, API Gateway and CloudFront at portfolio traffic add little. Check current pricing for your region, and keep the `AlertEmail` budget set.
 
+## Open search, expiry and rate limits
+
+Anyone can search any Twitch streamer, and the design keeps one visitor (or a script) from running up the bill.
+
+| Piece | Rule |
+| --- | --- |
+| Pinned streamers | The `PinnedStreamers` template parameter (default `rdcworld1,rdcgaming,kaicenat,xqc`). Always tracked, never expire. Applied by the hourly run, or run the poller by hand. |
+| Visitor streamers | Tracked for 48 hours after anyone last looked at them. Looking extends the stay, rewritten at most once an hour. |
+| Shared pool | At most `MaxStreamers` (default 10) visitor streamers at once. When full, only one nobody has looked at for 6 hours can be replaced; otherwise the search is refused with a clear message. A search for a channel that does not exist never evicts anyone. |
+| New lookups | Only a streamer ClipPulse is not already tracking costs anything. Each visitor (a hash of their IP, never stored raw) gets 5 per 10 minutes and everyone together gets 30 per hour, counted with an atomic conditional write in DynamoDB. Misspelled and made-up names count too. Rate-limited replies are HTTP 429 with a `Retry-After` header. |
+| Front door | API Gateway throttles to 5 requests per second sustained (burst 20). |
+| Expiry | Checked on every read through an `expires_at` field. DynamoDB's TTL only tidies up afterwards, because it can lag by up to 48 hours. |
+
+Hourly work is bounded by the pool: the pinned streamers plus at most `MaxStreamers` temporary ones. A new streamer's first appearance shows average views per hour; recent velocity, trend badges and the growth chart arrive after a couple of hourly snapshots.
+
+**What this does and does not guarantee.** It bounds the damage; it cannot make it zero, because AWS bills every request. A sustained flood is capped by the throttle: 5 requests per second for a month is roughly 13 million requests, on the order of $13 at HTTP API list pricing (check current rates) plus pennies of Lambda. The budget alert emails you, and `sam delete --stack-name clippulse` removes everything.
+
 ## Design decisions and trade-offs
 
 - **History as a list on the clip item, not one item per snapshot.** One `Query` returns a streamer's clips with their trends, and each poll costs one read and one write per clip. The cost is a read-modify-write per clip, which is safe because a single scheduled poller writes them.
@@ -146,7 +164,7 @@ Everything is pay-per-use. At the default limits (10 streamers, top 100 clips ea
 
 ## Known limits
 
-- **The streamer list is public.** Anyone can add a streamer, up to the cap (`MaxStreamers`, default 10). That bounds cost and Twitch usage, but a visitor could fill the slots. Fine for a portfolio project; add an admin token or authentication before running it for real users. Remove a streamer with `aws dynamodb delete-item`.
+- **Open to anyone, within limits.** A visitor can fill the shared visitor slots for a few hours, which blocks other new searches until a streamer has gone unvisited for 6 hours. The pinned list is never affected. There are no accounts and no per-visitor lists: the chips are shared by everyone, and the limits are per hashed IP, which people behind one shared address (a campus, for example) split between them.
 - **Velocity needs history.** A clip shows its average velocity until it has two snapshots at least 30 minutes apart, so a freshly added streamer looks less sharp for the first hour or two.
 - **Hourly resolution.** The poll interval is a template parameter (`PollSchedule`); polling faster costs proportionally more Twitch calls and writes.
 - **Twitch's data, Twitch's limits.** Only clips Twitch's API returns are visible, with the view counts it reports. ClipPulse is an independent project, not affiliated with or endorsed by Twitch.
@@ -156,7 +174,7 @@ Everything is pay-per-use. At the default limits (10 streamers, top 100 clips ea
 ```
 template.yaml                 SAM template: everything in AWS
 backend/src/clippulse/        scoring, twitch client, store, service, api, static site, poller
-backend/tests/                183 tests plus fakes
+backend/tests/                249 tests plus fakes
 backend/dev_server.py         local demo with fake channels
 frontend/src/                 React app (components, hooks, API client, pure helpers)
 frontend/test/                logic tests

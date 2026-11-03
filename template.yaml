@@ -15,12 +15,16 @@ Parameters:
     Type: String
     Default: rate(1 hour)
     Description: How often to snapshot view counts. Velocity needs at least two snapshots per clip.
+  PinnedStreamers:
+    Type: String
+    Default: "rdcworld1,rdcgaming,kaicenat,xqc"
+    Description: Comma-separated Twitch logins that are always tracked and never expire. Applied on the next hourly run (or invoke the poller by hand).
   MaxStreamers:
     Type: Number
     Default: 10
     MinValue: 1
     MaxValue: 50
-    Description: Upper bound on tracked streamers. This is what caps Twitch API calls and DynamoDB writes.
+    Description: How many visitor-added (temporary) streamers are tracked at once. With the pinned list, this is what caps Twitch API calls and DynamoDB writes.
   AlertEmail:
     Type: String
     Default: ""
@@ -52,6 +56,7 @@ Globals:
         TWITCH_CLIENT_ID_PARAM: !Ref TwitchClientIdParam
         TWITCH_CLIENT_SECRET_PARAM: !Ref TwitchClientSecretParam
         MAX_STREAMERS: !Ref MaxStreamers
+        PINNED_STREAMERS: !Ref PinnedStreamers
 
 Resources:
   # ---------------------------------------------------------------- data
@@ -85,7 +90,7 @@ Resources:
     Properties:
       DefaultRouteSettings:
         ThrottlingBurstLimit: 20
-        ThrottlingRateLimit: 10
+        ThrottlingRateLimit: 5
 
   ApiFunction:
     Type: AWS::Serverless::Function

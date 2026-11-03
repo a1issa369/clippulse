@@ -156,3 +156,5 @@ button, input, textarea { font: inherit; color: inherit; }
 .growth { display: flex; flex-direction: column; gap: 6px; padding: 12px; background: var(--surface-2); border-radius: 10px; }
 .growth h3 { font-size: 0.92rem; }
 .modal-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.hint { margin: -4px 0 14px; color: var(--muted); font-size: 0.86rem; }

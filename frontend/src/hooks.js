@@ -7,7 +7,7 @@ const REFRESH_MS = 60_000;
 /** Loads the clip feed for the current view and refreshes it once a minute while the tab is visible. */
 export function useFeed({ view, sort, days, hours }) {
   const key = `${view}|${sort}|${days}|${hours}`;
-  const [state, setState] = useState({ key: null, status: "loading", clips: [], asOf: null, error: null });
+  const [state, setState] = useState({ key: null, status: "loading", clips: [], asOf: null, error: null, errorStatus: null });
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -16,11 +16,11 @@ export function useFeed({ view, sort, days, hours }) {
       ? api.getRising({ hours }, controller.signal)
       : api.getClips(view, { sort, days }, controller.signal);
     request
-      .then((data) => setState({ key, status: "ready", clips: data.clips, asOf: data.as_of, error: null }))
+      .then((data) => setState({ key, status: "ready", clips: data.clips, asOf: data.as_of, error: null, errorStatus: null }))
       .catch((err) => {
         if (err?.name === "AbortError") return;
         // Keep showing what we had for this same view if only a background refresh failed.
-        setState((prev) => ({ key, status: "error", clips: prev.key === key ? prev.clips : [], asOf: null, error: err.message }));
+        setState((prev) => ({ key, status: "error", clips: prev.key === key ? prev.clips : [], asOf: null, error: err.message, errorStatus: err.status ?? null }));
       });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps

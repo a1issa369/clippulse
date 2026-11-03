@@ -53,12 +53,12 @@ export function TrackForm({ onTrack, prominent = false }) {
 
   return (
     <form className={prominent ? "track track--big" : "track"} onSubmit={submit}>
-      <label htmlFor={inputId} className="sr-only">Twitch username to track</label>
-      <input id={inputId} value={value} onChange={(e) => setValue(e.target.value)} placeholder="Track a streamer"
+      <label htmlFor={inputId} className="sr-only">Twitch username to search for</label>
+      <input id={inputId} value={value} onChange={(e) => setValue(e.target.value)} placeholder="Search any streamer"
         autoComplete="off" autoCapitalize="none" spellCheck="false" maxLength={26} aria-invalid={error ? "true" : undefined}
         aria-describedby={error ? `${inputId}-err` : undefined} />
       <button type="submit" className="btn btn--primary" disabled={busy || !value.trim()}>
-        {busy ? "Adding..." : "Add"}
+        {busy ? "Searching..." : "Search"}
       </button>
       {error && <p id={`${inputId}-err`} className="field-error" role="alert">{error}</p>}
     </form>

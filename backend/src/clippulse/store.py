@@ -4,7 +4,8 @@ development, and a DynamoDB implementation for AWS.
 DynamoDB single-table layout (all keys are strings):
 
     pk                 sk                           what it holds
-    STREAMERS          S#<login>                    a tracked streamer
+    STREAMERS          S#<login>                    a tracked streamer (pinned, or temporary with expires_at)
+    RATE#<bucket>      W#<window>                   a fixed-window counter for rate limiting (TTL cleans it up)
     B#<broadcaster>    C#<created_at>#<clip_id>     a clip plus its view-count history
     BOARD#<board_id>   I#<clip_id>                  one saved shotlist item
 
@@ -22,6 +23,11 @@ from typing import Any, Dict, List, Optional
 
 STREAMERS_PK = "STREAMERS"
 
+# One atomic DynamoDB write both counts a use and refuses it once the limit is reached.
+# (#ttl and #hits are placeholders because `ttl` is a reserved word.)
+TAKE_TOKEN_UPDATE = "SET #ttl = :ttl ADD #hits :one"
+TAKE_TOKEN_CONDITION = "attribute_not_exists(#hits) OR #hits < :limit"
+
 
 class Store(ABC):
     # streamers
@@ -31,6 +37,13 @@ class Store(ABC):
     def get_streamer(self, login: str) -> Optional[dict]: ...
     @abstractmethod
     def put_streamer(self, streamer: dict) -> None: ...
+    @abstractmethod
+    def delete_streamer(self, login: str) -> bool: ...
+
+    # rate limiting
+    @abstractmethod
+    def take_token(self, bucket: str, window_seconds: int, limit: int, now: float) -> bool:
+        """Count one use of `bucket` in the current fixed window. False (and no count) once `limit` is reached."""
 
     # clips
     @abstractmethod
@@ -67,6 +80,7 @@ class MemoryStore(Store):
         self._streamers: Dict[str, dict] = {}
         self._clips: Dict[str, Dict[str, dict]] = {}
         self._boards: Dict[str, Dict[str, dict]] = {}
+        self._counters: Dict[tuple, int] = {}
 
     def list_streamers(self):
         return [copy.deepcopy(self._streamers[k]) for k in sorted(self._streamers)]
@@ -77,6 +91,16 @@ class MemoryStore(Store):
 
     def put_streamer(self, streamer):
         self._streamers[streamer["login"]] = copy.deepcopy(streamer)
+
+    def delete_streamer(self, login):
+        return self._streamers.pop(login, None) is not None
+
+    def take_token(self, bucket, window_seconds, limit, now):
+        key = (bucket, int(now // window_seconds))
+        if self._counters.get(key, 0) >= limit:
+            return False
+        self._counters[key] = self._counters.get(key, 0) + 1
+        return True
 
     def upsert_clips(self, broadcaster_id, clips, now_iso, history_points, ttl):
         bucket = self._clips.setdefault(broadcaster_id, {})
@@ -162,6 +186,26 @@ class DynamoStore(Store):
 
     def put_streamer(self, streamer):
         self._table.put_item(Item=to_dynamo({"pk": STREAMERS_PK, "sk": f"S#{streamer['login']}", **streamer}))
+
+    def delete_streamer(self, login):
+        resp = self._table.delete_item(Key={"pk": STREAMERS_PK, "sk": f"S#{login}"}, ReturnValues="ALL_OLD")
+        return bool(resp.get("Attributes"))
+
+    def take_token(self, bucket, window_seconds, limit, now):
+        window = int(now // window_seconds)
+        try:
+            self._table.update_item(
+                Key={"pk": f"RATE#{bucket}", "sk": f"W#{window}"},
+                UpdateExpression=TAKE_TOKEN_UPDATE,
+                ConditionExpression=TAKE_TOKEN_CONDITION,
+                ExpressionAttributeNames={"#ttl": "ttl", "#hits": "hits"},
+                ExpressionAttributeValues={":ttl": (window + 2) * window_seconds, ":one": 1, ":limit": limit},
+            )
+            return True
+        except Exception as err:   # botocore is not imported here, so match on the error code instead
+            if getattr(err, "response", {}).get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return False
+            raise
 
     # clips
     @staticmethod

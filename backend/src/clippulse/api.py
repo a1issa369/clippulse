@@ -7,13 +7,14 @@ Either way the browser talks to a single origin, so no CORS is needed.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .service import ClipService, ServiceError, ValidationError
+from .service import ClipService, RateLimited, ServiceError, ValidationError
 from .static import StaticSite
 
 logger = logging.getLogger("clippulse.api")
@@ -73,7 +74,10 @@ class App:
                 return error_response(405, "method_not_allowed", "Method not allowed.")
             return error_response(404, "not_found", "No such route.")
         except ServiceError as err:
-            return error_response(err.status, err.code, err.message)
+            response = error_response(err.status, err.code, err.message)
+            if isinstance(err, RateLimited):
+                response["headers"]["retry-after"] = str(err.retry_after)
+            return response
         except Exception:  # never leak internals to the caller
             logger.exception("unhandled error for %s %s", method, path)
             return error_response(500, "internal_error", "Something went wrong.")
@@ -98,7 +102,7 @@ class App:
 
     def _track_streamer(self, event: Event) -> Response:
         body = _json_body(event)
-        result = self.service.track_streamer(body.get("login"))
+        result = self.service.track_streamer(body.get("login"), client_id=_client_id(event))
         return json_response(201 if result["created"] else 200, result)
 
     def _streamer_clips(self, event: Event, login: str) -> Response:
@@ -127,6 +131,12 @@ class App:
     def _remove_item(self, event: Event, board: str, clip: str) -> Response:
         self.service.remove_item(board, clip)
         return json_response(204)
+
+
+def _client_id(event: Event) -> str:
+    """A stable, anonymous id for rate limiting: a hash of the caller's IP, so no raw address is stored."""
+    ip = (event.get("requestContext", {}).get("http", {}) or {}).get("sourceIp") or "unknown"
+    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:20]
 
 
 def _query(event: Event) -> Dict[str, str]:
